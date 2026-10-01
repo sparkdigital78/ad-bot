@@ -73,36 +73,6 @@ jobs:
           TOTAL_SHARDS: ${{ matrix.total_shards }}
         run: python -u bot.py
 
-      - name: Commit Shard Progress State
-        if: always()
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          for i in {1..5}; do
-            git fetch origin main || true
-            git rebase origin/main || true
-            
-            if [ -f completed_accounts_shard_${{ matrix.shard }}.txt ]; then 
-              git add completed_accounts_shard_${{ matrix.shard }}.txt
-            fi
-            if [ -f ALL_DONE.txt ]; then 
-              git add ALL_DONE.txt
-            fi
-            
-            if git status --porcelain | grep -E "completed_accounts_shard_|ALL_DONE.txt"; then
-              git commit -m "update: saved progress for shard ${{ matrix.shard }}"
-              if git push origin HEAD:main; then
-                echo "Successfully pushed shard progress!"
-                break
-              fi
-            else
-              echo "No progress state changes to commit."
-              break
-            fi
-            sleep $((RANDOM % 5 + 2))
-          done
-
       - name: Upload Execution Videos
         if: always()
         uses: actions/upload-artifact@v4
@@ -110,12 +80,3 @@ jobs:
           name: execution-videos-shard-${{ matrix.shard }}-${{ github.run_number }}
           path: videos/
           retention-days: 7
-
-      - name: Check Overall Status
-        if: ${{ always() && matrix.shard == 1 }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          TOTAL_SHARDS: ${{ matrix.total_shards }}
-        run: python check_status.py
