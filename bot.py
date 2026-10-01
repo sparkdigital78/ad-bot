@@ -39,7 +39,7 @@ ALL_EMAILS = [e.strip().lower() for e in raw_emails.replace(",", " ").split() if
 shard_index = int(os.environ.get("SHARD_INDEX", "1"))
 total_shards = int(os.environ.get("TOTAL_SHARDS", "1"))
 
-# Distribute accounts evenly across shards without checking past completion history
+# Distribute accounts evenly across shards
 SHARD_ASSIGNED_EMAILS = [
     email for idx, email in enumerate(ALL_EMAILS)
     if idx % total_shards == (shard_index - 1)
@@ -53,6 +53,7 @@ if not SHARD_ASSIGNED_EMAILS:
     sys.exit(0)
 
 ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(SHARD_ASSIGNED_EMAILS)]
+TARGET_BATCH_SIZE = 15
 
 
 def purge_popups(page):
@@ -421,7 +422,15 @@ def process_single_account(page, account):
 
 def run_all_accounts():
     global current_context
-    total_assigned = len(ACCOUNTS)
+    total_assigned = len(SHARD_ASSIGNED_EMAILS)
+    remaining_pool = list(ACCOUNTS)
+    active_batch = []
+
+    while remaining_pool and len(active_batch) < TARGET_BATCH_SIZE:
+        active_batch.append(remaining_pool.pop(0))
+
+    cycle_count = 1
+    current_idx = 0
 
     os.makedirs("videos", exist_ok=True)
 
@@ -439,13 +448,24 @@ def run_all_accounts():
             ]
         )
 
-        for idx, account in enumerate(ACCOUNTS):
+        while active_batch:
+            if current_idx >= len(active_batch):
+                current_idx = 0
+                cycle_count += 1
+                print("\n" + "=" * 60)
+                print(f"   STARTING CYCLE {cycle_count} ACROSS CURRENT {len(active_batch)} ACTIVE ACCOUNTS")
+                print("=" * 60)
+
+            account = active_batch[current_idx]
             email = account["email"]
 
             print("\n" + "-" * 50)
             print(f" [PROGRESS STATUS - SHARD {shard_index}/{total_shards}]")
-            print(f"  • Processing Account {idx + 1}/{total_assigned}: {email}")
+            print(f"  • Assigned To This Runner:   {total_assigned}")
+            print(f"  • Currently Active Batch:    {len(active_batch)}")
+            print(f"  • Waiting in Queue:          {len(remaining_pool)}")
             print("-" * 50)
+            print(f"[Cycle {cycle_count} | Slot {current_idx + 1}/{len(active_batch)}] Account: {email}")
 
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
@@ -459,15 +479,29 @@ def run_all_accounts():
             current_context = context
 
             try:
-                process_single_account(page, account)
+                status = process_single_account(page, account)
             except Exception as e:
                 print(f"Error executing {email}: {e}")
+                status = "ERROR"
 
             context.close()
             current_context = None
 
+            if status == "LIMIT_REACHED":
+                print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
+                active_batch.pop(current_idx)
+
+                if remaining_pool:
+                    new_acc = remaining_pool.pop(0)
+                    print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
+                    active_batch.insert(current_idx, new_acc)
+                else:
+                    print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
+            else:
+                current_idx += 1
+
         print("\n" + "=" * 60)
-        print(f"SUMMARY: SHARD {shard_index}/{total_shards} FINISHED EXECUTING ALL ASSIGNED ACCOUNTS!")
+        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS FINISHED ALL ASSIGNED ACCOUNTS!")
         print("=" * 60)
 
         browser.close()
