@@ -23,7 +23,7 @@ signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
 # ============================================================
-# READ EMAILS & FILTER COMPLETED ONES
+# READ EMAILS & DYNAMICALLY SHARD ACCOUNTS
 # ============================================================
 raw_emails = ""
 if os.path.exists("emails.txt"):
@@ -36,28 +36,47 @@ else:
 email_password = os.environ.get("ACCOUNT_PASSWORD", "Chetan@2026")
 ALL_EMAILS = [e.strip().lower() for e in raw_emails.replace(",", " ").split() if e.strip()]
 
-# If completed_accounts was cleared for a new run, clear ALL_DONE marker
-if os.path.exists("ALL_DONE.txt") and not os.path.exists("completed_accounts.txt"):
+shard_index = int(os.environ.get("SHARD_INDEX", "1"))
+total_shards = int(os.environ.get("TOTAL_SHARDS", "1"))
+shard_file = f"completed_accounts_shard_{shard_index}.txt"
+
+# Clear ALL_DONE lock if progress state was reset
+if os.path.exists("ALL_DONE.txt") and not any(os.path.exists(f"completed_accounts_shard_{i}.txt") for i in range(1, total_shards + 1)):
     os.remove("ALL_DONE.txt")
 
+# Combine all completed accounts across all shards
 completed_set = set()
+for s in range(1, total_shards + 1):
+    s_file = f"completed_accounts_shard_{s}.txt"
+    if os.path.exists(s_file):
+        with open(s_file, "r", encoding="utf-8") as f:
+            completed_set.update({line.strip().lower() for line in f if line.strip()})
+
 if os.path.exists("completed_accounts.txt"):
     with open("completed_accounts.txt", "r", encoding="utf-8") as f:
-        completed_set = {line.strip().lower() for line in f if line.strip()}
-    print(f"--> Found {len(completed_set)} previously completed accounts.")
+        completed_set.update({line.strip().lower() for line in f if line.strip()})
 
+print(f"--> [SHARD {shard_index}/{total_shards}] Found {len(completed_set)} total completed accounts across all shards.")
+
+# Filter out accounts already done today
 PENDING_EMAILS = [e for e in ALL_EMAILS if e not in completed_set]
 
-if not PENDING_EMAILS:
-    print("--> All accounts completed! Marking ALL_DONE...")
-    with open("ALL_DONE.txt", "w", encoding="utf-8") as f:
-        f.write("DONE\n")
-    if os.path.exists("completed_accounts.txt"):
-        os.remove("completed_accounts.txt")
+# Distribute pending accounts evenly across shards
+SHARD_ASSIGNED_EMAILS = [
+    email for idx, email in enumerate(PENDING_EMAILS)
+    if idx % total_shards == (shard_index - 1)
+]
+
+print(f"--> [SHARD {shard_index}/{total_shards}] Total list size: {len(ALL_EMAILS)}")
+print(f"--> [SHARD {shard_index}/{total_shards}] Remaining pending: {len(PENDING_EMAILS)}")
+print(f"--> [SHARD {shard_index}/{total_shards}] Assigned to this shard: {len(SHARD_ASSIGNED_EMAILS)}")
+
+if not SHARD_ASSIGNED_EMAILS:
+    print(f"--> [SHARD {shard_index}] No pending accounts assigned to this worker. Exiting cleanly...")
     sys.exit(0)
 
-ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(PENDING_EMAILS)]
-TARGET_BATCH_SIZE = 5
+ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(SHARD_ASSIGNED_EMAILS)]
+TARGET_BATCH_SIZE = 15  # Increased batch size to 15 accounts together
 
 
 def purge_popups(page):
@@ -426,10 +445,9 @@ def process_single_account(page, account):
 
 def run_all_accounts():
     global current_context
-    total_loaded = len(ALL_EMAILS)
+    total_assigned = len(SHARD_ASSIGNED_EMAILS)
     remaining_pool = list(ACCOUNTS)
     active_batch = []
-    completed_accounts = list(completed_set)
 
     while remaining_pool and len(active_batch) < TARGET_BATCH_SIZE:
         active_batch.append(remaining_pool.pop(0))
@@ -462,15 +480,15 @@ def run_all_accounts():
                 print("=" * 60)
 
             account = active_batch[current_idx]
-            
+            email = account["email"]
+
             print("\n" + "-" * 50)
-            print(f" [PROGRESS STATUS]")
-            print(f"  • Total Accounts:            {total_loaded}")
-            print(f"  • Already Completed:         {len(completed_accounts)}")
+            print(f" [PROGRESS STATUS - SHARD {shard_index}/{total_shards}]")
+            print(f"  • Assigned To This Runner:   {total_assigned}")
             print(f"  • Currently Active Batch:    {len(active_batch)}")
             print(f"  • Waiting in Queue:          {len(remaining_pool)}")
             print("-" * 50)
-            print(f"[Cycle {cycle_count} | Slot {current_idx + 1}/{len(active_batch)}] Account: {account['email']}")
+            print(f"[Cycle {cycle_count} | Slot {current_idx + 1}/{len(active_batch)}] Account: {email}")
 
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
@@ -486,18 +504,17 @@ def run_all_accounts():
             try:
                 status = process_single_account(page, account)
             except Exception as e:
-                print(f"Error executing {account['email']}: {e}")
+                print(f"Error executing {email}: {e}")
                 status = "ERROR"
 
             context.close()
             current_context = None
 
             if status == "LIMIT_REACHED":
-                print(f"--> [REMOVING ACCOUNT] {account['email']} reached limit. Dropping from active batch.")
+                print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
                 finished_acc = active_batch.pop(current_idx)
-                completed_accounts.append(finished_acc['email'])
 
-                with open("completed_accounts.txt", "a", encoding="utf-8") as f:
+                with open(shard_file, "a", encoding="utf-8") as f:
                     f.write(f"{finished_acc['email']}\n")
 
                 if remaining_pool:
@@ -508,22 +525,13 @@ def run_all_accounts():
                     print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
             else:
                 current_idx += 1
-                time.sleep(1)
 
         print("\n" + "=" * 60)
-        print(f"SUMMARY: ALL {total_loaded} ACCOUNTS HAVE REACHED THEIR DAILY AD LIMIT!")
-        print("--> Writing ALL_DONE.txt lock file to prevent auto-restart!")
+        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS FINISHED ALL ASSIGNED ACCOUNTS!")
         print("=" * 60)
-
-        with open("ALL_DONE.txt", "w", encoding="utf-8") as f:
-            f.write("DONE\n")
-
-        if os.path.exists("completed_accounts.txt"):
-            os.remove("completed_accounts.txt")
 
         browser.close()
 
 
 if __name__ == "__main__":
     run_all_accounts()
-    
