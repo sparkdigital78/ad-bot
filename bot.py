@@ -38,37 +38,18 @@ ALL_EMAILS = [e.strip().lower() for e in raw_emails.replace(",", " ").split() if
 
 shard_index = int(os.environ.get("SHARD_INDEX", "1"))
 total_shards = int(os.environ.get("TOTAL_SHARDS", "1"))
-shard_file = f"completed_accounts_shard_{shard_index}.txt"
 
-# Combine all completed accounts across all shards
-completed_set = set()
-for s in range(1, total_shards + 1):
-    s_file = f"completed_accounts_shard_{s}.txt"
-    if os.path.exists(s_file):
-        with open(s_file, "r", encoding="utf-8") as f:
-            completed_set.update({line.strip().lower() for line in f if line.strip()})
-
-if os.path.exists("completed_accounts.txt"):
-    with open("completed_accounts.txt", "r", encoding="utf-8") as f:
-        completed_set.update({line.strip().lower() for line in f if line.strip()})
-
-print(f"--> [SHARD {shard_index}/{total_shards}] Found {len(completed_set)} total completed accounts across all shards.")
-
-# Filter out accounts already done today
-PENDING_EMAILS = [e for e in ALL_EMAILS if e not in completed_set]
-
-# Distribute pending accounts evenly across shards
+# Distribute accounts evenly across shards without checking past completion history
 SHARD_ASSIGNED_EMAILS = [
-    email for idx, email in enumerate(PENDING_EMAILS)
+    email for idx, email in enumerate(ALL_EMAILS)
     if idx % total_shards == (shard_index - 1)
 ]
 
 print(f"--> [SHARD {shard_index}/{total_shards}] Total list size: {len(ALL_EMAILS)}")
-print(f"--> [SHARD {shard_index}/{total_shards}] Remaining pending: {len(PENDING_EMAILS)}")
 print(f"--> [SHARD {shard_index}/{total_shards}] Assigned to this shard: {len(SHARD_ASSIGNED_EMAILS)}")
 
 if not SHARD_ASSIGNED_EMAILS:
-    print(f"--> [SHARD {shard_index}] No pending accounts assigned to this worker. Exiting cleanly...")
+    print(f"--> [SHARD {shard_index}] No accounts assigned to this worker. Exiting cleanly...")
     sys.exit(0)
 
 ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(SHARD_ASSIGNED_EMAILS)]
@@ -458,13 +439,12 @@ def run_all_accounts():
             ]
         )
 
-        # Single pass execution over assigned accounts; no re-queuing or auto-restart loops
         for idx, account in enumerate(ACCOUNTS):
             email = account["email"]
 
             print("\n" + "-" * 50)
             print(f" [PROGRESS STATUS - SHARD {shard_index}/{total_shards}]")
-            print(f"  • Account {idx + 1}/{total_assigned}: {email}")
+            print(f"  • Processing Account {idx + 1}/{total_assigned}: {email}")
             print("-" * 50)
 
             context = browser.new_context(
@@ -479,21 +459,15 @@ def run_all_accounts():
             current_context = context
 
             try:
-                status = process_single_account(page, account)
+                process_single_account(page, account)
             except Exception as e:
                 print(f"Error executing {email}: {e}")
-                status = "ERROR"
 
             context.close()
             current_context = None
 
-            if status == "LIMIT_REACHED":
-                print(f"--> [COMPLETED] {email} reached limit. Saving to shard state.")
-                with open(shard_file, "a", encoding="utf-8") as f:
-                    f.write(f"{email}\n")
-
         print("\n" + "=" * 60)
-        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS COMPLETED ITS SINGLE PASS RUN!")
+        print(f"SUMMARY: SHARD {shard_index}/{total_shards} FINISHED EXECUTING ALL ASSIGNED ACCOUNTS!")
         print("=" * 60)
 
         browser.close()
