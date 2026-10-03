@@ -2,6 +2,17 @@ name: Run Daily Ad Bot Parallel
 
 on:
   workflow_dispatch:
+    inputs:
+      shards_count:
+        description: 'Number of parallel shards (e.g., 4, 8, 16)'
+        required: true
+        default: '16'
+        type: choice
+        options:
+          - '4'
+          - '8'
+          - '12'
+          - '16'
 
 permissions: write-all
 
@@ -10,13 +21,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Dynamic setup job that creates the shard numbers automatically
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          COUNT=${{ github.event.inputs.shards_count || '16' }}
+          SHARDS=$(python3 -c "import json; print(json.dumps(list(range(1, $COUNT + 1))))")
+          echo "matrix={\"shard\":$SHARDS, \"total_shards\":[$COUNT]}" >> $GITHUB_OUTPUT
+
   run-automation:
+    needs: setup-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-        total_shards: [16]
+      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
     timeout-minutes: 340
     steps:
       - name: Checkout Repository
