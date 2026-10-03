@@ -4,15 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       shards_count:
-        description: 'Number of parallel shards (e.g., 4, 8, 16)'
+        description: 'Number of parallel shards (Enter any number from 1 to 20)'
         required: true
         default: '16'
-        type: choice
-        options:
-          - '4'
-          - '8'
-          - '12'
-          - '16'
 
 permissions: write-all
 
@@ -21,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Dynamic setup job that creates the shard numbers automatically
+  # Dynamic setup job that generates matrix array from 1 up to your chosen number
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -29,7 +23,21 @@ jobs:
     steps:
       - id: set-matrix
         run: |
-          COUNT=${{ github.event.inputs.shards_count || '16' }}
+          RAW_COUNT="${{ github.event.inputs.shards_count }}"
+          # Fallback to 16 if empty or non-numeric
+          if ! [[ "$RAW_COUNT" =~ ^[0-9]+$ ]]; then
+            RAW_COUNT=16
+          fi
+          
+          # Clamp range strictly between 1 and 20
+          if [ "$RAW_COUNT" -lt 1 ]; then
+            COUNT=1
+          elif [ "$RAW_COUNT" -gt 20 ]; then
+            COUNT=20
+          else
+            COUNT=$RAW_COUNT
+          fi
+
           SHARDS=$(python3 -c "import json; print(json.dumps(list(range(1, $COUNT + 1))))")
           echo "matrix={\"shard\":$SHARDS, \"total_shards\":[$COUNT]}" >> $GITHUB_OUTPUT
 
