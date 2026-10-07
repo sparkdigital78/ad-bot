@@ -64,20 +64,12 @@ def purge_popups(page):
         pass
 
     try:
-        # Strip top promo banners and floating overlays that block button clicks
         page.evaluate("""() => {
-            const promoBanners = document.querySelectorAll('div[class*="banner"], div[class*="offer"], div[class*="promo"], header + div');
-            promoBanners.forEach(b => {
-                if (b.textContent && (b.textContent.includes('OFF') || b.textContent.includes('Seedance') || b.textContent.includes('Limited-Time'))) {
-                    b.remove();
-                }
-            });
-
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
             dialogs.forEach(d => {
                 const isLogin = d.querySelector('input[placeholder*="email" i], input[type="email"]') ||
                                 (d.textContent && d.textContent.includes('Sign in'));
-                if (!isLogin && !d.textContent.includes('Watch ad')) {
+                if (!isLogin) {
                     const closeBtn = d.querySelector('button, [class*="close"], svg, i');
                     if (closeBtn) closeBtn.click();
                 }
@@ -286,66 +278,42 @@ def click_ok_button(page):
 
 def click_watch_ad(page):
     try:
-        # Ensure we are strictly on the earn-credits page
-        if "earn-credits" not in page.url:
-            print("--> Redirected to wrong page, moving back to earn-credits...")
-            page.goto("https://easemate.ai/earn-credits", wait_until="load")
-            page.wait_for_timeout(2000)
+        page.wait_for_timeout(2000)
 
-        purge_popups(page)
+        btn = page.locator("div").filter(has_text="Watch ad to earn credits").get_by_text("Go Now").last
+        if btn.is_visible():
+            btn.scroll_into_view_if_needed()
+            page.wait_for_timeout(500)
+            btn.click(force=True)
 
-        # Target ONLY the card containing 'Watch ad to earn credits'
-        clicked = page.evaluate("""() => {
+        page.evaluate("""() => {
             const allElements = Array.from(document.querySelectorAll('*'));
-            
-            // Find text node strictly matching 'Watch ad to earn credits'
-            const watchAdHeader = allElements.find(el => 
-                el.children.length === 0 && 
-                el.textContent.trim().toLowerCase().includes('watch ad to earn credits')
+            const watchAdTitle = allElements.find(el =>
+                el.children.length === 0 && el.textContent.includes('Watch ad to earn credits')
             );
+            if (!watchAdTitle) return;
 
-            if (!watchAdHeader) return false;
-
-            // Traverse up to find the outer parent card container
-            let parentCard = watchAdHeader;
-            while (parentCard && parentCard.parentElement && !parentCard.textContent.includes('10 ads/day')) {
-                parentCard = parentCard.parentElement;
+            let card = watchAdTitle;
+            while (card && card.parentElement && !card.textContent.includes('10 ads/day')) {
+                card = card.parentElement;
             }
-            if (!parentCard) parentCard = watchAdHeader.parentElement.parentElement;
+            if (!card) card = watchAdTitle.closest('div');
+            if (!card) return;
 
-            if (parentCard) {
-                // Find 'Go Now' button inside this verified card only
-                const cardButtons = Array.from(parentCard.querySelectorAll('*'));
-                const goBtn = cardButtons.find(b => 
-                    b.children.length === 0 && 
-                    b.textContent.trim().toLowerCase().includes('go now')
-                );
-
-                if (goBtn) {
-                    goBtn.scrollIntoView({ block: 'center' });
-                    goBtn.click();
-                    goBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    return true;
-                }
-            }
-            return false;
+            const goNowBtn = Array.from(card.querySelectorAll('*')).find(el =>
+                el.textContent.trim().toLowerCase().includes('go now')
+            );
+            if (goNowBtn) goNowBtn.click();
         }""")
 
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(3500)
 
-        # If page navigated away, it clicked the wrong button
-        if "earn-credits" not in page.url:
-            print("--> [WRONG CLICK] Navigated away from earn-credits page. Returning...")
-            page.goto("https://easemate.ai/earn-credits", wait_until="load")
-            return False
-
-        # Strict Ad Modal Verification: Ensures a REAL ad player or modal popped up
         has_ad = page.evaluate("""() => {
             const googleFullscreen = document.querySelector('[id*="goog_fullscreen"], [src*="googleads"], [id*="google_ads"]');
+            const videoElement = document.querySelector('video');
             const activeModal = document.querySelector('div[role="dialog"], [class*="modal-open"], [class*="overlay"]');
-            const visibleVideo = Array.from(document.querySelectorAll('video')).find(v => v.offsetWidth > 200 && v.offsetHeight > 200);
             
-            if (visibleVideo || googleFullscreen) return true;
+            if (videoElement || googleFullscreen) return true;
             if (activeModal) {
                 const rect = activeModal.getBoundingClientRect();
                 if (rect.width > 300 && rect.height > 300) return true;
@@ -354,11 +322,9 @@ def click_watch_ad(page):
         }""")
 
         if has_ad:
-            print("--> [SUCCESS] Watch Ad button clicked & ad modal verified!")
             force_unpause_videos(page)
             return True
 
-        print("--> [WARNING] Click did not launch ad modal.")
         return False
     except Exception as e:
         print(f"--> Error in click_watch_ad: {e}")
@@ -521,9 +487,8 @@ def run_all_accounts():
             context.close()
             current_context = None
 
-            # Remove finished or maxed-out accounts from active batch
-            if status in ["SUCCESS", "LIMIT_REACHED"]:
-                print(f"--> [FINISHED] {email} completed task or reached limit. Dropping from queue.")
+            if status == "LIMIT_REACHED":
+                print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
                 active_batch.pop(current_idx)
 
                 if remaining_pool:
