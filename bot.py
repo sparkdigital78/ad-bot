@@ -64,12 +64,20 @@ def purge_popups(page):
         pass
 
     try:
+        # Strip top promo banners and floating overlays that block button clicks
         page.evaluate("""() => {
+            const promoBanners = document.querySelectorAll('div[class*="banner"], div[class*="offer"], div[class*="promo"], header + div');
+            promoBanners.forEach(b => {
+                if (b.textContent && (b.textContent.includes('OFF') || b.textContent.includes('Seedance') || b.textContent.includes('Limited-Time'))) {
+                    b.remove();
+                }
+            });
+
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
             dialogs.forEach(d => {
                 const isLogin = d.querySelector('input[placeholder*="email" i], input[type="email"]') ||
                                 (d.textContent && d.textContent.includes('Sign in'));
-                if (!isLogin) {
+                if (!isLogin && !d.textContent.includes('Watch ad')) {
                     const closeBtn = d.querySelector('button, [class*="close"], svg, i');
                     if (closeBtn) closeBtn.click();
                 }
@@ -279,41 +287,47 @@ def click_ok_button(page):
 def click_watch_ad(page):
     try:
         page.wait_for_timeout(2000)
+        purge_popups(page)
 
-        btn = page.locator("div").filter(has_text="Watch ad to earn credits").get_by_text("Go Now").last
-        if btn.is_visible():
-            btn.scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            btn.click(force=True)
-
-        page.evaluate("""() => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            const watchAdTitle = allElements.find(el =>
-                el.children.length === 0 && el.textContent.includes('Watch ad to earn credits')
-            );
-            if (!watchAdTitle) return;
-
-            let card = watchAdTitle;
-            while (card && card.parentElement && !card.textContent.includes('10 ads/day')) {
-                card = card.parentElement;
+        # 1. Target the exact 'Go Now' button inside the 'Watch ad to earn credits' card
+        clicked = page.evaluate("""() => {
+            const cards = Array.from(document.querySelectorAll('div, section'));
+            for (let card of cards) {
+                if (card.textContent && card.textContent.includes('Watch ad to earn credits')) {
+                    const btns = Array.from(card.querySelectorAll('button, div, span, a'));
+                    const goBtn = btns.find(b => b.children.length === 0 && b.textContent.trim().toLowerCase().includes('go now'));
+                    if (goBtn) {
+                        goBtn.scrollIntoView({ block: 'center' });
+                        goBtn.click();
+                        goBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return true;
+                    }
+                }
             }
-            if (!card) card = watchAdTitle.closest('div');
-            if (!card) return;
-
-            const goNowBtn = Array.from(card.querySelectorAll('*')).find(el =>
-                el.textContent.trim().toLowerCase().includes('go now')
-            );
-            if (goNowBtn) goNowBtn.click();
+            return false;
         }""")
 
-        page.wait_for_timeout(3500)
+        if not clicked:
+            # Fallback to mouse click on exact bounding box
+            btn = page.locator("div").filter(has_text="Watch ad to earn credits").get_by_text("Go Now").last
+            if btn.is_visible():
+                btn.scroll_into_view_if_needed()
+                box = btn.bounding_box()
+                if box:
+                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                else:
+                    btn.click(force=True)
 
+        page.wait_for_timeout(4000)
+
+        # 2. Strict Ad Modal Verification: Ensures a REAL ad player or modal popped up
         has_ad = page.evaluate("""() => {
+            // Check for explicit ad elements
             const googleFullscreen = document.querySelector('[id*="goog_fullscreen"], [src*="googleads"], [id*="google_ads"]');
-            const videoElement = document.querySelector('video');
             const activeModal = document.querySelector('div[role="dialog"], [class*="modal-open"], [class*="overlay"]');
+            const visibleVideo = Array.from(document.querySelectorAll('video')).find(v => v.offsetWidth > 200 && v.offsetHeight > 200);
             
-            if (videoElement || googleFullscreen) return true;
+            if (visibleVideo || googleFullscreen) return true;
             if (activeModal) {
                 const rect = activeModal.getBoundingClientRect();
                 if (rect.width > 300 && rect.height > 300) return true;
@@ -322,9 +336,11 @@ def click_watch_ad(page):
         }""")
 
         if has_ad:
+            print("--> [SUCCESS] Ad modal verified and playing!")
             force_unpause_videos(page)
             return True
 
+        print("--> [WARNING] 'Go Now' clicked, but no active ad modal detected.")
         return False
     except Exception as e:
         print(f"--> Error in click_watch_ad: {e}")
@@ -487,8 +503,9 @@ def run_all_accounts():
             context.close()
             current_context = None
 
-            if status == "LIMIT_REACHED":
-                print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
+            # Remove finished or maxed-out accounts from active batch
+            if status in ["SUCCESS", "LIMIT_REACHED"]:
+                print(f"--> [FINISHED] {email} completed task or reached limit. Dropping from queue.")
                 active_batch.pop(current_idx)
 
                 if remaining_pool:
