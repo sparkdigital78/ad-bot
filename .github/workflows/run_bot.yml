@@ -6,7 +6,7 @@ on:
       shards_count:
         description: 'Number of parallel shards (Enter any number from 1 to 20)'
         required: true
-        default: '16'
+        default: '20'
 
 permissions: write-all
 
