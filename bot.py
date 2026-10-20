@@ -2,6 +2,7 @@ import os
 import time
 import signal
 import sys
+import random
 from playwright.sync_api import sync_playwright
 
 current_context = None
@@ -52,8 +53,13 @@ if not SHARD_ASSIGNED_EMAILS:
     print(f"--> [SHARD {shard_index}] No accounts assigned to this worker. Exiting cleanly...")
     sys.exit(0)
 
+# Stagger startup to prevent parallel login collisions
+startup_delay = (shard_index - 1) * random.randint(2, 5)
+if startup_delay > 0:
+    print(f"--> [STAGGER] Shard {shard_index} sleeping for {startup_delay}s before starting...")
+    time.sleep(startup_delay)
+
 ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(SHARD_ASSIGNED_EMAILS)]
-TARGET_BATCH_SIZE = 15
 
 
 def purge_popups(page):
@@ -357,81 +363,100 @@ def process_single_account(page, account):
     page.fill("input[placeholder='Enter your email address']", email)
     page.wait_for_timeout(1000)
 
+    # Check for instant Signature Limit Error
+    try:
+        limit_err = page.locator("text=/signature limit exceeded/i")
+        if limit_err.count() > 0 and limit_err.first.is_visible():
+            print(f"[{email}] SIGNATURE LIMIT EXCEEDED on login input! Dropping account...")
+            return "LIMIT_REACHED"
+    except Exception:
+        pass
+
     page.fill("input[placeholder='Enter your Password']", password)
     page.wait_for_timeout(1000)
 
     page.get_by_role("button", name="Log in").last.click()
     page.wait_for_timeout(4000)
 
+    # Check for Signature Limit Error post-login click
+    try:
+        limit_err = page.locator("text=/signature limit exceeded/i")
+        if limit_err.count() > 0 and limit_err.first.is_visible():
+            print(f"[{email}] SIGNATURE LIMIT EXCEEDED after submit! Dropping account...")
+            return "LIMIT_REACHED"
+    except Exception:
+        pass
+
     print(f"[{email}] Navigating to Earn Credits page...")
     page.goto("https://easemate.ai/earn-credits", wait_until="load")
     page.wait_for_timeout(3000)
 
-    purge_popups(page)
-    page.wait_for_timeout(1000)
-
-    page.mouse.wheel(0, 500)
-    page.wait_for_timeout(1000)
-
-    if check_daily_limit_reached(page):
-        print(f"[{email}] LIMIT DETECTED: Account has used all ad opportunities for today!")
-        return "LIMIT_REACHED"
-
-    print(f"[{email}] Starting ad task...")
-    
-    ad_started = False
-    for attempt in range(3):
+    ad_count = 0
+    while True:
         purge_popups(page)
         page.wait_for_timeout(1000)
 
-        if click_watch_ad(page):
-            ad_started = True
-            break
-        
-        print(f"[{email}] Warning: Ad failed to launch (attempt {attempt + 1}/3). Reloading page to retry...")
-        page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(3000)
         page.mouse.wheel(0, 500)
+        page.wait_for_timeout(1000)
 
-    if not ad_started:
-        print(f"[{email}] ERROR: Ad network served no ad for this account. Skipping to next account...")
-        return "ERROR"
+        if check_daily_limit_reached(page):
+            print(f"[{email}] LIMIT DETECTED: Account has used all ad opportunities for today!")
+            return "LIMIT_REACHED"
 
-    page.wait_for_timeout(1000)
+        ad_count += 1
+        print(f"[{email}] Starting ad attempt #{ad_count}...")
+        
+        ad_started = False
+        for attempt in range(3):
+            purge_popups(page)
+            page.wait_for_timeout(1000)
 
-    if check_daily_limit_reached(page):
-        print(f"[{email}] LIMIT DETECTED: 'You have used all your ad watch opportunities for today.'")
-        return "LIMIT_REACHED"
+            if click_watch_ad(page):
+                ad_started = True
+                break
+            
+            print(f"[{email}] Warning: Ad failed to launch (attempt {attempt + 1}/3). Reloading page to retry...")
+            page.goto("https://easemate.ai/earn-credits", wait_until="load")
+            page.wait_for_timeout(3000)
+            page.mouse.wheel(0, 500)
 
-    print(f"[{email}] Watching video ad (35s)...")
-    for _ in range(7):
-        force_unpause_videos(page)
-        time.sleep(5)
+        if not ad_started:
+            print(f"[{email}] ERROR: Ad network served no ad. Exiting account loop...")
+            return "ERROR"
 
-    print(f"[{email}] Closing ad player...")
-    page.wait_for_timeout(1000)
-    click_close_button(page)
+        page.wait_for_timeout(1000)
 
-    page.wait_for_timeout(1000)
-    click_ok_button(page)
-    page.wait_for_timeout(2000)
+        if check_daily_limit_reached(page):
+            print(f"[{email}] LIMIT DETECTED: 'You have used all your ad watch opportunities for today.'")
+            return "LIMIT_REACHED"
 
-    print(f"[{email}] SUCCESS: Ad cycle completed and reward claimed!")
-    return "SUCCESS"
+        print(f"[{email}] Watching video ad (35s)...")
+        for _ in range(7):
+            force_unpause_videos(page)
+            time.sleep(5)
+
+        print(f"[{email}] Closing ad player...")
+        page.wait_for_timeout(1000)
+        click_close_button(page)
+
+        page.wait_for_timeout(1000)
+        click_ok_button(page)
+        page.wait_for_timeout(2000)
+
+        print(f"[{email}] SUCCESS: Ad #{ad_count} completed and reward claimed!")
+        
+        # Check limit after claiming reward
+        if check_daily_limit_reached(page):
+            print(f"[{email}] LIMIT DETECTED: Daily limit reached after claiming ad #{ad_count}!")
+            return "LIMIT_REACHED"
+
+        # Wait 3 minutes 10 seconds (190s) directly on the earn-credits page
+        print(f"[{email}] Waiting 3 min 10 sec (190s) before next ad on this account...")
+        time.sleep(190)
 
 
 def run_all_accounts():
     global current_context
-    total_assigned = len(SHARD_ASSIGNED_EMAILS)
-    remaining_pool = list(ACCOUNTS)
-    active_batch = []
-
-    while remaining_pool and len(active_batch) < TARGET_BATCH_SIZE:
-        active_batch.append(remaining_pool.pop(0))
-
-    cycle_count = 1
-    current_idx = 0
-
     os.makedirs("videos", exist_ok=True)
 
     with sync_playwright() as p:
@@ -448,24 +473,11 @@ def run_all_accounts():
             ]
         )
 
-        while active_batch:
-            if current_idx >= len(active_batch):
-                current_idx = 0
-                cycle_count += 1
-                print("\n" + "=" * 60)
-                print(f"   STARTING CYCLE {cycle_count} ACROSS CURRENT {len(active_batch)} ACTIVE ACCOUNTS")
-                print("=" * 60)
-
-            account = active_batch[current_idx]
+        for idx, account in enumerate(ACCOUNTS):
             email = account["email"]
-
-            print("\n" + "-" * 50)
-            print(f" [PROGRESS STATUS - SHARD {shard_index}/{total_shards}]")
-            print(f"  • Assigned To This Runner:   {total_assigned}")
-            print(f"  • Currently Active Batch:    {len(active_batch)}")
-            print(f"  • Waiting in Queue:          {len(remaining_pool)}")
-            print("-" * 50)
-            print(f"[Cycle {cycle_count} | Slot {current_idx + 1}/{len(active_batch)}] Account: {email}")
+            print("\n" + "=" * 60)
+            print(f"[SHARD {shard_index}/{total_shards}] Account {idx + 1}/{len(ACCOUNTS)}: {email}")
+            print("=" * 60)
 
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
@@ -480,28 +492,15 @@ def run_all_accounts():
 
             try:
                 status = process_single_account(page, account)
+                print(f"[{email}] Finished with status: {status}")
             except Exception as e:
                 print(f"Error executing {email}: {e}")
-                status = "ERROR"
 
             context.close()
             current_context = None
 
-            if status == "LIMIT_REACHED":
-                print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
-                active_batch.pop(current_idx)
-
-                if remaining_pool:
-                    new_acc = remaining_pool.pop(0)
-                    print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
-                    active_batch.insert(current_idx, new_acc)
-                else:
-                    print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
-            else:
-                current_idx += 1
-
         print("\n" + "=" * 60)
-        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS FINISHED ALL ASSIGNED ACCOUNTS!")
+        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS COMPLETED ALL ASSIGNED ACCOUNTS!")
         print("=" * 60)
 
         browser.close()
