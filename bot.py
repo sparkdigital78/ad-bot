@@ -128,14 +128,45 @@ def force_unpause_videos(page):
 
 
 def check_daily_limit_reached(page):
-    try:
-        limit_text = "You have used all your ad watch opportunities for today"
-        for frame in page.frames:
-            element = frame.get_by_text(limit_text, exact=False)
+    """Checks for the exact toast/popup: 'You have used all your ad watch opportunities for today. Please try again tomorrow.'"""
+    limit_phrases = [
+        "You have used all your ad watch opportunities for today",
+        "Please try again tomorrow",
+        "used all your ad watch"
+    ]
+    
+    for phrase in limit_phrases:
+        try:
+            # Check main page
+            element = page.get_by_text(phrase, exact=False)
             if element.count() > 0 and element.first.is_visible():
                 return True
+        except Exception:
+            pass
+
+        try:
+            # Check frames/iframes
+            for frame in page.frames:
+                frame_element = frame.get_by_text(phrase, exact=False)
+                if frame_element.count() > 0 and frame_element.first.is_visible():
+                    return True
+        except Exception:
+            pass
+
+    # DOM Fallback scan across all elements
+    try:
+        has_limit = page.evaluate("""() => {
+            const allNodes = Array.from(document.querySelectorAll('*'));
+            return allNodes.some(node => 
+                node.textContent && 
+                node.textContent.includes('You have used all your ad watch opportunities for today')
+            );
+        }""")
+        if has_limit:
+            return True
     except Exception:
         pass
+
     return False
 
 
@@ -339,7 +370,14 @@ def click_watch_ad(page):
                 }
             }""")
 
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(3500)
+
+        # Check if limit popup was triggered immediately upon clicking
+        if check_daily_limit_reached(page):
+            print("--> [LIMIT POPUP DETECTED] Popup appeared right after clicking 'Go Now'!")
+            return "LIMIT_REACHED"
+
+        page.wait_for_timeout(1500)
 
         has_ad = page.evaluate("""() => {
             const googleFullscreen = document.querySelector('[id*="goog"], [src*="googleads"], [id*="google_ads"], iframe[src*="doubleclick"]');
@@ -431,52 +469,73 @@ def process_single_account(page, account):
     page.mouse.wheel(0, 500)
     page.wait_for_timeout(1000)
 
-    if check_daily_limit_reached(page):
-        print(f"[{email}] LIMIT DETECTED: Account has used all ad opportunities for today!")
-        return "LIMIT_REACHED"
+    # ============================================================
+    # CONTINUOUS AD WATCHING LOOP UNTIL "LIMIT REACHED" MESSAGE
+    # ============================================================
+    ad_count = 0
+    max_ads_per_account = 15  # Safety threshold
 
-    print(f"[{email}] Starting single ad attempt...")
-    
-    ad_started = False
-    for attempt in range(3):
-        handle_daily_checkin_modal(page)
+    while ad_count < max_ads_per_account:
+        if check_daily_limit_reached(page):
+            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle and logging out... <<<")
+            return "LIMIT_REACHED"
+
+        ad_count += 1
+        print(f"\n[{email}] Starting ad attempt #{ad_count}...")
+
+        ad_status = click_watch_ad(page)
+
+        if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
+            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
+            return "LIMIT_REACHED"
+
+        if ad_status is False:
+            print(f"[{email}] Warning: Ad failed to launch (attempt 1). Reloading page to retry...")
+            page.goto("https://easemate.ai/earn-credits", wait_until="load")
+            page.wait_for_timeout(3000)
+            handle_daily_checkin_modal(page)
+            page.mouse.wheel(0, 500)
+
+            if check_daily_limit_reached(page):
+                print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
+                return "LIMIT_REACHED"
+
+            ad_status = click_watch_ad(page)
+            if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
+                print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
+                return "LIMIT_REACHED"
+
+            if ad_status is False:
+                print(f"[{email}] ERROR: Ad network served no ad after retry. Moving to next account...")
+                return "ERROR"
+
         page.wait_for_timeout(1000)
 
-        if click_watch_ad(page):
-            ad_started = True
-            break
-        
-        print(f"[{email}] Warning: Ad failed to launch (attempt {attempt + 1}/3). Reloading page to retry...")
-        page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(3000)
-        handle_daily_checkin_modal(page)
-        page.mouse.wheel(0, 500)
+        if check_daily_limit_reached(page):
+            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
+            return "LIMIT_REACHED"
 
-    if not ad_started:
-        print(f"[{email}] ERROR: Ad network served no ad. Moving to next account...")
-        return "ERROR"
+        print(f"[{email}] Watching video ad #{ad_count} (35s)...")
+        for _ in range(7):
+            force_unpause_videos(page)
+            time.sleep(5)
 
-    page.wait_for_timeout(1000)
+        print(f"[{email}] Closing ad player for ad #{ad_count}...")
+        page.wait_for_timeout(1000)
+        click_close_button(page)
 
-    if check_daily_limit_reached(page):
-        print(f"[{email}] LIMIT DETECTED: 'You have used all your ad watch opportunities for today.'")
-        return "LIMIT_REACHED"
+        page.wait_for_timeout(1000)
+        click_ok_button(page)
+        page.wait_for_timeout(2000)
 
-    print(f"[{email}] Watching video ad (35s)...")
-    for _ in range(7):
-        force_unpause_videos(page)
-        time.sleep(5)
+        print(f"[{email}] SUCCESS: Ad #{ad_count} completed and reward claimed!")
 
-    print(f"[{email}] Closing ad player...")
-    page.wait_for_timeout(1000)
-    click_close_button(page)
+        if check_daily_limit_reached(page):
+            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
+            return "LIMIT_REACHED"
 
-    page.wait_for_timeout(1000)
-    click_ok_button(page)
-    page.wait_for_timeout(2000)
-
-    print(f"[{email}] SUCCESS: Ad completed and reward claimed! Moving to next account.")
-    return "SUCCESS"
+    print(f"[{email}] Safety cap of {max_ads_per_account} ads reached. Dropping account from cycle...")
+    return "LIMIT_REACHED"
 
 
 def run_all_accounts():
