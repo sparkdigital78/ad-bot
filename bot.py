@@ -304,11 +304,11 @@ def click_watch_ad(page):
     try:
         page.wait_for_timeout(2000)
 
-        # Scroll down so the Watch Ad section is fully in view
+        # Scroll down so the Watch Ad section is in view
         page.mouse.wheel(0, 600)
         page.wait_for_timeout(1000)
 
-        # Target the exact container heading "Watch ad to earn credits"
+        # Target container heading "Watch ad to earn credits"
         ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
         
         if ad_title.is_visible():
@@ -402,7 +402,6 @@ def process_single_account(page, account):
     page.get_by_role("button", name="Log in").last.click()
     page.wait_for_timeout(4000)
 
-    # Automatically dismiss post-login checkin & promo modals
     handle_daily_checkin_modal(page)
 
     # Check for Signature Limit Error post-login click
@@ -418,57 +417,60 @@ def process_single_account(page, account):
     page.goto("https://easemate.ai/earn-credits", wait_until="load")
     page.wait_for_timeout(3000)
 
-    # Clear popups on earn-credits page
     handle_daily_checkin_modal(page)
-    page.mouse.wheel(0, 500)
-    page.wait_for_timeout(1000)
 
-    if check_daily_limit_reached(page):
-        print(f"[{email}] LIMIT DETECTED: Account has used all ad opportunities for today!")
-        return "LIMIT_REACHED"
+    # CONTINUOUS AD WATCH LOOP PER ACCOUNT UNTIL LIMIT IS REACHED
+    ad_count = 0
+    while True:
+        ad_count += 1
+        print(f"\n--- [{email}] Ad Loop #{ad_count} ---")
 
-    print(f"[{email}] Starting single ad attempt...")
-    
-    ad_started = False
-    for attempt in range(3):
-        handle_daily_checkin_modal(page)
+        page.mouse.wheel(0, 500)
         page.wait_for_timeout(1000)
 
-        if click_watch_ad(page):
-            ad_started = True
-            break
-        
-        print(f"[{email}] Warning: Ad failed to launch (attempt {attempt + 1}/3). Reloading page to retry...")
-        page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(3000)
-        handle_daily_checkin_modal(page)
-        page.mouse.wheel(0, 500)
+        if check_daily_limit_reached(page):
+            print(f"[{email}] LIMIT DETECTED: Daily ad watch limit reached for this account!")
+            return "LIMIT_REACHED"
 
-    if not ad_started:
-        print(f"[{email}] ERROR: Ad network served no ad. Moving to next account...")
-        return "ERROR"
+        ad_started = False
+        for attempt in range(3):
+            handle_daily_checkin_modal(page)
+            page.wait_for_timeout(1000)
 
-    page.wait_for_timeout(1000)
+            if click_watch_ad(page):
+                ad_started = True
+                break
+            
+            print(f"[{email}] Warning: Ad failed to launch (attempt {attempt + 1}/3). Reloading page...")
+            page.goto("https://easemate.ai/earn-credits", wait_until="load")
+            page.wait_for_timeout(3000)
+            handle_daily_checkin_modal(page)
 
-    if check_daily_limit_reached(page):
-        print(f"[{email}] LIMIT DETECTED: 'You have used all your ad watch opportunities for today.'")
-        return "LIMIT_REACHED"
+        if not ad_started:
+            print(f"[{email}] ERROR: Ad network served no ad after 3 attempts. Moving to next account...")
+            return "ERROR"
 
-    print(f"[{email}] Watching video ad (35s)...")
-    for _ in range(7):
-        force_unpause_videos(page)
-        time.sleep(5)
+        page.wait_for_timeout(1000)
 
-    print(f"[{email}] Closing ad player...")
-    page.wait_for_timeout(1000)
-    click_close_button(page)
+        if check_daily_limit_reached(page):
+            print(f"[{email}] LIMIT DETECTED: Daily ad watch limit reached!")
+            return "LIMIT_REACHED"
 
-    page.wait_for_timeout(1000)
-    click_ok_button(page)
-    page.wait_for_timeout(2000)
+        print(f"[{email}] Watching video ad (35s)...")
+        for _ in range(7):
+            force_unpause_videos(page)
+            time.sleep(5)
 
-    print(f"[{email}] SUCCESS: Ad completed and reward claimed! Moving to next account.")
-    return "SUCCESS"
+        print(f"[{email}] Closing ad player...")
+        page.wait_for_timeout(1000)
+        click_close_button(page)
+
+        page.wait_for_timeout(1000)
+        click_ok_button(page)
+        page.wait_for_timeout(2000)
+
+        print(f"[{email}] Ad #{ad_count} completed! Waiting 3 min 5 sec (185s) before next ad...")
+        time.sleep(185)
 
 
 def run_all_accounts():
