@@ -15,7 +15,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Dynamic setup job that generates matrix array from 1 up to your chosen number
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -24,12 +23,10 @@ jobs:
       - id: set-matrix
         run: |
           RAW_COUNT="${{ github.event.inputs.shards_count }}"
-          # Fallback to 16 if empty or non-numeric
           if ! [[ "$RAW_COUNT" =~ ^[0-9]+$ ]]; then
-            RAW_COUNT=16
+            RAW_COUNT=20
           fi
           
-          # Clamp range strictly between 1 and 20
           if [ "$RAW_COUNT" -lt 1 ]; then
             COUNT=1
           elif [ "$RAW_COUNT" -gt 20 ]; then
@@ -65,8 +62,7 @@ jobs:
         run: |
           sudo apt-get update
           DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-            xvfb x11vnc novnc websockify npm
-          sudo npm install -g localtunnel
+            xvfb x11vnc novnc websockify openssh-client
 
       - name: Install Python & Playwright Chromium
         run: |
@@ -86,13 +82,16 @@ jobs:
           /usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
           sleep 3
           
-          lt --port 6080 > lt.log 2>&1 &
-          sleep 5
+          # Establish tunnel via Pinggy over SSH (avoids localtunnel blocks)
+          ssh -p 443 -R0:localhost:6080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io > pinggy.log 2>&1 &
+          sleep 6
           
-          TUNNEL_URL=$(grep -o 'https://[^" ]*' lt.log | head -n 1)
+          TUNNEL_URL=$(grep -o 'https://[^" ]*' pinggy.log | head -n 1)
+          HOST_DOMAIN=${TUNNEL_URL#https://}
+          
           echo "=========================================================="
           echo "LIVE STREAM URL (SHARD ${{ matrix.shard }}/${{ matrix.total_shards }}):"
-          echo "${TUNNEL_URL}/vnc.html?host=${TUNNEL_URL#https://}&port=443"
+          echo "${TUNNEL_URL}/vnc.html?host=${HOST_DOMAIN}&port=443"
           echo "=========================================================="
 
       - name: Run Script (Shard ${{ matrix.shard }}/${{ matrix.total_shards }})
