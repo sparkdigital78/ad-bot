@@ -302,7 +302,7 @@ def click_ok_button(page):
 
 def click_watch_ad(page):
     try:
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(2500)
 
         # Scroll down so the Watch Ad section is fully in view
         page.mouse.wheel(0, 600)
@@ -311,6 +311,7 @@ def click_watch_ad(page):
         # Target the exact container heading "Watch ad to earn credits"
         ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
         
+        clicked = False
         if ad_title.is_visible():
             card_container = page.locator("div").filter(has=ad_title).filter(has_text="Go Now").last
             btn = card_container.locator("button, a, div").filter(has_text="Go Now").last
@@ -320,7 +321,9 @@ def click_watch_ad(page):
                 page.wait_for_timeout(500)
                 btn.click(force=True)
                 print("--> [CLICK] Found and clicked 'Go Now' for Watch Ad!")
-        else:
+                clicked = True
+
+        if not clicked:
             page.evaluate("""() => {
                 const elements = Array.from(document.querySelectorAll('*'));
                 const targetText = elements.find(el => el.textContent && el.textContent.trim() === 'Watch ad to earn credits');
@@ -336,17 +339,17 @@ def click_watch_ad(page):
                 }
             }""")
 
-        page.wait_for_timeout(3500)
+        page.wait_for_timeout(5000)
 
         has_ad = page.evaluate("""() => {
-            const googleFullscreen = document.querySelector('[id*="goog_fullscreen"], [src*="googleads"], [id*="google_ads"]');
+            const googleFullscreen = document.querySelector('[id*="goog"], [src*="googleads"], [id*="google_ads"], iframe[src*="doubleclick"]');
             const videoElement = document.querySelector('video');
             const activeModal = document.querySelector('div[role="dialog"], [class*="modal-open"], [class*="overlay"]');
             
             if (videoElement || googleFullscreen) return true;
             if (activeModal) {
                 const rect = activeModal.getBoundingClientRect();
-                if (rect.width > 300 && rect.height > 300) return true;
+                if (rect.width > 250 && rect.height > 250) return true;
             }
             return false;
         }""")
@@ -354,6 +357,11 @@ def click_watch_ad(page):
         if has_ad:
             force_unpause_videos(page)
             return True
+
+        for frame in page.frames:
+            if "google" in frame.url or "doubleclick" in frame.url:
+                force_unpause_videos(page)
+                return True
 
         return False
     except Exception as e:
