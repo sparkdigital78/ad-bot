@@ -128,7 +128,7 @@ def force_unpause_videos(page):
 
 
 def check_daily_limit_reached(page):
-    """Checks for the exact toast/popup: 'You have used all your ad watch opportunities for today. Please try again tomorrow.'"""
+    """Checks for daily limit phrase."""
     limit_phrases = [
         "You have used all your ad watch opportunities for today",
         "Please try again tomorrow",
@@ -137,7 +137,6 @@ def check_daily_limit_reached(page):
     
     for phrase in limit_phrases:
         try:
-            # Check main page
             element = page.get_by_text(phrase, exact=False)
             if element.count() > 0 and element.first.is_visible():
                 return True
@@ -145,7 +144,6 @@ def check_daily_limit_reached(page):
             pass
 
         try:
-            # Check frames/iframes
             for frame in page.frames:
                 frame_element = frame.get_by_text(phrase, exact=False)
                 if frame_element.count() > 0 and frame_element.first.is_visible():
@@ -153,7 +151,6 @@ def check_daily_limit_reached(page):
         except Exception:
             pass
 
-    # DOM Fallback scan across all elements
     try:
         has_limit = page.evaluate("""() => {
             const allNodes = Array.from(document.querySelectorAll('*'));
@@ -335,11 +332,9 @@ def click_watch_ad(page):
     try:
         page.wait_for_timeout(2500)
 
-        # Scroll down so the Watch Ad section is fully in view
         page.mouse.wheel(0, 600)
         page.wait_for_timeout(1000)
 
-        # Target the exact container heading "Watch ad to earn credits"
         ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
         
         clicked = False
@@ -372,7 +367,6 @@ def click_watch_ad(page):
 
         page.wait_for_timeout(3500)
 
-        # Check if limit popup was triggered immediately upon clicking
         if check_daily_limit_reached(page):
             print("--> [LIMIT POPUP DETECTED] Popup appeared right after clicking 'Go Now'!")
             return "LIMIT_REACHED"
@@ -407,7 +401,8 @@ def click_watch_ad(page):
         return False
 
 
-def process_single_account(page, account):
+def watch_single_ad_for_account(page, account):
+    """Logs into account, watches 1 ad, and returns status."""
     email = account["email"]
     password = account["password"]
 
@@ -433,11 +428,10 @@ def process_single_account(page, account):
     page.fill("input[placeholder='Enter your email address']", email)
     page.wait_for_timeout(1000)
 
-    # Check for instant Signature Limit Error
     try:
         limit_err = page.locator("text=/signature limit exceeded/i")
         if limit_err.count() > 0 and limit_err.first.is_visible():
-            print(f"[{email}] SIGNATURE LIMIT EXCEEDED on login input! Skipping account...")
+            print(f"[{email}] SIGNATURE LIMIT EXCEEDED on login input! Dropping account from round-robin...")
             return "LIMIT_REACHED"
     except Exception:
         pass
@@ -448,14 +442,12 @@ def process_single_account(page, account):
     page.get_by_role("button", name="Log in").last.click()
     page.wait_for_timeout(4000)
 
-    # Automatically dismiss post-login checkin & promo modals
     handle_daily_checkin_modal(page)
 
-    # Check for Signature Limit Error post-login click
     try:
         limit_err = page.locator("text=/signature limit exceeded/i")
         if limit_err.count() > 0 and limit_err.first.is_visible():
-            print(f"[{email}] SIGNATURE LIMIT EXCEEDED after submit! Skipping account...")
+            print(f"[{email}] SIGNATURE LIMIT EXCEEDED after submit! Dropping account from round-robin...")
             return "LIMIT_REACHED"
     except Exception:
         pass
@@ -464,83 +456,74 @@ def process_single_account(page, account):
     page.goto("https://easemate.ai/earn-credits", wait_until="load")
     page.wait_for_timeout(3000)
 
-    # Clear popups on earn-credits page
     handle_daily_checkin_modal(page)
     page.mouse.wheel(0, 500)
     page.wait_for_timeout(1000)
 
-    # ============================================================
-    # CONTINUOUS AD WATCHING LOOP UNTIL "LIMIT REACHED" MESSAGE
-    # ============================================================
-    ad_count = 0
-    max_ads_per_account = 15  # Safety threshold
+    if check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
 
-    while ad_count < max_ads_per_account:
+    print(f"[{email}] Attempting to watch 1 ad...")
+    ad_status = click_watch_ad(page)
+
+    if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
+
+    if ad_status is False:
+        print(f"[{email}] Ad failed to load. Reloading earn-credits page...")
+        page.goto("https://easemate.ai/earn-credits", wait_until="load")
+        page.wait_for_timeout(3000)
+        handle_daily_checkin_modal(page)
+        page.mouse.wheel(0, 500)
+
         if check_daily_limit_reached(page):
-            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle and logging out... <<<")
+            print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
             return "LIMIT_REACHED"
 
-        ad_count += 1
-        print(f"\n[{email}] Starting ad attempt #{ad_count}...")
-
         ad_status = click_watch_ad(page)
-
         if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
-            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
+            print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
             return "LIMIT_REACHED"
 
         if ad_status is False:
-            print(f"[{email}] Warning: Ad failed to launch (attempt 1). Reloading page to retry...")
-            page.goto("https://easemate.ai/earn-credits", wait_until="load")
-            page.wait_for_timeout(3000)
-            handle_daily_checkin_modal(page)
-            page.mouse.wheel(0, 500)
+            print(f"[{email}] Ad network served no ad. Moving to next account in rotation.")
+            return "NO_AD"
 
-            if check_daily_limit_reached(page):
-                print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
-                return "LIMIT_REACHED"
+    page.wait_for_timeout(1000)
 
-            ad_status = click_watch_ad(page)
-            if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
-                print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
-                return "LIMIT_REACHED"
+    if check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
 
-            if ad_status is False:
-                print(f"[{email}] ERROR: Ad network served no ad after retry. Moving to next account...")
-                return "ERROR"
+    print(f"[{email}] Watching video ad (35s)...")
+    for _ in range(7):
+        force_unpause_videos(page)
+        time.sleep(5)
 
-        page.wait_for_timeout(1000)
+    print(f"[{email}] Closing ad player...")
+    page.wait_for_timeout(1000)
+    click_close_button(page)
 
-        if check_daily_limit_reached(page):
-            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
-            return "LIMIT_REACHED"
+    page.wait_for_timeout(1000)
+    click_ok_button(page)
+    page.wait_for_timeout(2000)
 
-        print(f"[{email}] Watching video ad #{ad_count} (35s)...")
-        for _ in range(7):
-            force_unpause_videos(page)
-            time.sleep(5)
+    if check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
 
-        print(f"[{email}] Closing ad player for ad #{ad_count}...")
-        page.wait_for_timeout(1000)
-        click_close_button(page)
-
-        page.wait_for_timeout(1000)
-        click_ok_button(page)
-        page.wait_for_timeout(2000)
-
-        print(f"[{email}] SUCCESS: Ad #{ad_count} completed and reward claimed!")
-
-        if check_daily_limit_reached(page):
-            print(f"\n[{email}] >>> LIMIT REACHED MESSAGE DETECTED! Dropping account from cycle... <<<")
-            return "LIMIT_REACHED"
-
-    print(f"[{email}] Safety cap of {max_ads_per_account} ads reached. Dropping account from cycle...")
-    return "LIMIT_REACHED"
+    print(f"[{email}] SUCCESS: Watched 1 ad successfully! Switching to next account in cycle.")
+    return "SUCCESS"
 
 
 def run_all_accounts():
     global current_context
     os.makedirs("videos", exist_ok=True)
+
+    active_accounts = list(ACCOUNTS)
+    round_number = 1
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -556,35 +539,54 @@ def run_all_accounts():
             ]
         )
 
-        for idx, account in enumerate(ACCOUNTS):
-            email = account["email"]
-            print("\n" + "=" * 60)
-            print(f"[SHARD {shard_index}/{total_shards}] Account {idx + 1}/{len(ACCOUNTS)}: {email}")
-            print("=" * 60)
+        # Round-robin loop: continues rotating until active_accounts is empty
+        while active_accounts:
+            print("\n" + "=" * 70)
+            print(f"[ROUND {round_number}] Active accounts remaining in shard: {len(active_accounts)}")
+            print("=" * 70)
 
-            context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                record_video_dir="videos/",
-                record_video_size={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-            
-            page = context.new_page()
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            current_context = context
+            accounts_to_remove = []
 
-            try:
-                status = process_single_account(page, account)
-                print(f"[{email}] Finished with status: {status}")
-            except Exception as e:
-                print(f"Error executing {email}: {e}")
+            for account in active_accounts:
+                email = account["email"]
+                print("\n" + "-" * 50)
+                print(f"[SHARD {shard_index}/{total_shards}] Round {round_number} -> Account: {email}")
+                print("-" * 50)
 
-            context.close()
-            current_context = None
+                context = browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    record_video_dir="videos/",
+                    record_video_size={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                )
+                
+                page = context.new_page()
+                page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                current_context = context
 
-        print("\n" + "=" * 60)
-        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS COMPLETED ALL ASSIGNED ACCOUNTS!")
-        print("=" * 60)
+                try:
+                    status = watch_single_ad_for_account(page, account)
+                    
+                    if status == "LIMIT_REACHED":
+                        print(f"--> [DROPPED] Removing {email} permanently from future rounds.")
+                        accounts_to_remove.append(account)
+
+                except Exception as e:
+                    print(f"Error executing {email}: {e}")
+
+                context.close()
+                current_context = None
+
+            # Remove dropped accounts after cycle completion
+            for acc in accounts_to_remove:
+                if acc in active_accounts:
+                    active_accounts.remove(acc)
+
+            round_number += 1
+
+        print("\n" + "=" * 70)
+        print(f"SUMMARY: ALL ACCOUNTS IN SHARD {shard_index}/{total_shards} HAVE COMPLETED THEIR DAILY LIMITS!")
+        print("=" * 70)
 
         browser.close()
 
