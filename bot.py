@@ -148,7 +148,7 @@ def click_close_button(page):
 
         for frame in page.frames:
             close_selectors = [
-                "text=/^close\$/i",
+                "text=/^close$/i",
                 "text='Close'",
                 "text='close'",
                 "#dismiss-button",
@@ -280,7 +280,7 @@ def click_ok_button(page):
             locators = [
                 frame.get_by_role("button", name="OK"),
                 frame.get_by_text("OK", exact=True),
-                frame.locator("text=/^ok\$/i"),
+                frame.locator("text=/^ok$/i"),
                 frame.locator("button:has-text('OK')"),
                 frame.locator("div[role='dialog'] button")
             ]
@@ -304,27 +304,34 @@ def click_watch_ad(page):
     try:
         page.wait_for_timeout(2000)
 
-        # Directly locate the container text for Watch Ad
-        ad_card = page.locator("div").filter(has_text="Watch ad to earn credits").filter(has_text="Go Now")
+        # Scroll down so the Watch Ad section is fully in view
+        page.mouse.wheel(0, 600)
+        page.wait_for_timeout(1000)
+
+        # Target the exact container heading "Watch ad to earn credits"
+        ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
         
-        if ad_card.count() > 0:
-            btn = ad_card.locator("button, a, div").filter(has_text="Go Now").first
+        if ad_title.is_visible():
+            card_container = page.locator("div").filter(has=ad_title).filter(has_text="Go Now").last
+            btn = card_container.locator("button, a, div").filter(has_text="Go Now").last
+            
             if btn.is_visible():
                 btn.scroll_into_view_if_needed()
                 page.wait_for_timeout(500)
                 btn.click(force=True)
-                print("--> [CLICK] Successfully clicked 'Go Now' for Watch Ad!")
+                print("--> [CLICK] Found and clicked 'Go Now' for Watch Ad!")
         else:
             page.evaluate("""() => {
-                const cards = Array.from(document.querySelectorAll('div'));
-                for (let card of cards) {
-                    if (card.textContent.includes('Watch ad to earn credits') && card.textContent.includes('Go Now')) {
-                        const btns = Array.from(card.querySelectorAll('*'));
-                        const goBtn = btns.find(el => el.textContent.trim().toLowerCase() === 'go now');
-                        if (goBtn) {
-                            goBtn.click();
-                            return;
-                        }
+                const elements = Array.from(document.querySelectorAll('*'));
+                const targetText = elements.find(el => el.textContent && el.textContent.trim() === 'Watch ad to earn credits');
+                if (targetText) {
+                    let parent = targetText.parentElement;
+                    while (parent && !parent.textContent.includes('Go Now')) {
+                        parent = parent.parentElement;
+                    }
+                    if (parent) {
+                        const goBtn = Array.from(parent.querySelectorAll('*')).find(el => el.textContent && el.textContent.trim().toLowerCase() === 'go now');
+                        if (goBtn) goBtn.click();
                     }
                 }
             }""")
@@ -464,4 +471,56 @@ def process_single_account(page, account):
     return "SUCCESS"
 
 
-def run_all_accounts
+def run_all_accounts():
+    global current_context
+    os.makedirs("videos", exist_ok=True)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--window-size=1920,1080",
+                "--autoplay-policy=no-user-gesture-required"
+            ]
+        )
+
+        for idx, account in enumerate(ACCOUNTS):
+            email = account["email"]
+            print("\n" + "=" * 60)
+            print(f"[SHARD {shard_index}/{total_shards}] Account {idx + 1}/{len(ACCOUNTS)}: {email}")
+            print("=" * 60)
+
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                record_video_dir="videos/",
+                record_video_size={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            
+            page = context.new_page()
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            current_context = context
+
+            try:
+                status = process_single_account(page, account)
+                print(f"[{email}] Finished with status: {status}")
+            except Exception as e:
+                print(f"Error executing {email}: {e}")
+
+            context.close()
+            current_context = None
+
+        print("\n" + "=" * 60)
+        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS COMPLETED ALL ASSIGNED ACCOUNTS!")
+        print("=" * 60)
+
+        browser.close()
+
+
+if __name__ == "__main__":
+    run_all_accounts()
