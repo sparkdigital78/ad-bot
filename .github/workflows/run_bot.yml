@@ -82,11 +82,11 @@ jobs:
           /usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
           sleep 3
           
-          # Establish tunnel via Pinggy over SSH (avoids localtunnel blocks)
-          ssh -p 443 -R0:localhost:6080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io > pinggy.log 2>&1 &
-          sleep 6
+          # Establish stable tunnel via Serveo
+          ssh -R 80:localhost:6080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 serveo.net > serveo.log 2>&1 &
+          sleep 7
           
-          TUNNEL_URL=$(grep -o 'https://[^" ]*' pinggy.log | head -n 1)
+          TUNNEL_URL=$(grep -o 'https://[^" ]*\.serveo\.net' serveo.log | head -n 1)
           HOST_DOMAIN=${TUNNEL_URL#https://}
           
           echo "=========================================================="
