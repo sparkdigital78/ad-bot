@@ -1,0 +1,64 @@
+name: Launch Cloud Live Browser
+
+on:
+  workflow_dispatch:
+
+jobs:
+  launch-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # Keeps runner alive up to 6 hours
+
+    steps:
+      - name: Install System Tools, Chrome & noVNC
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
+            xvfb x11vnc novnc websockify wget google-chrome-stable npm
+          sudo npm install -g localtunnel
+
+      - name: Start Virtual Display & Desktop Tools
+        run: |
+          # 1. Start Xvfb Virtual Display (1080p resolution)
+          Xvfb :99 -screen 0 1920x1080x24 &
+          export DISPLAY=:99
+          sleep 2
+          
+          # 2. Start VNC Server (Allows control & mouse clicks)
+          x11vnc -display :99 -forever -shared -rfbport 5900 -nopw &
+          sleep 2
+          
+          # 3. Start noVNC Web Proxy on Port 6080
+          /usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
+          sleep 3
+
+      - name: Launch Live Google Chrome
+        run: |
+          export DISPLAY=:99
+          
+          # Launch Google Chrome in non-headless mode
+          google-chrome \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --window-size=1920,1080 \
+            --start-maximized \
+            "https://www.google.com" &
+          sleep 3
+
+      - name: Expose Live Stream & Keep Runner Alive
+        run: |
+          # Start LocalTunnel to expose port 6080 to the web
+          lt --port 6080 > lt.log 2>&1 &
+          sleep 6
+
+          TUNNEL_URL=$(grep -o 'https://[^" ]*' lt.log | head -n 1)
+          
+          echo "=================================================================="
+          echo "  YOUR LIVE CLOUD BROWSER IS READY!"
+          echo "  OPEN THIS LINK IN YOUR WEB BROWSER:"
+          echo "  ${TUNNEL_URL}/vnc.html?autoconnect=true"
+          echo "=================================================================="
+          
+          # Sleep loop to keep the runner alive so you can use the browser
+          while true; do
+            sleep 60
+          done
