@@ -1,64 +1,113 @@
-name: Launch Cloud Live Browser
+name: Run Daily Ad Bot Parallel
 
 on:
   workflow_dispatch:
+    inputs:
+      shards_count:
+        description: 'Number of parallel shards (Enter any number from 1 to 20)'
+        required: true
+        default: '20'
+
+permissions: write-all
+
+concurrency:
+  group: daily-ad-bot-matrix
+  cancel-in-progress: false
 
 jobs:
-  launch-browser:
+  # Dynamic setup job that generates matrix array from 1 up to your chosen number
+  setup-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Keeps runner alive up to 6 hours
-
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Install System Tools, Chrome & noVNC
+      - id: set-matrix
+        run: |
+          RAW_COUNT="${{ github.event.inputs.shards_count }}"
+          # Fallback to 16 if empty or non-numeric
+          if ! [[ "$RAW_COUNT" =~ ^[0-9]+$ ]]; then
+            RAW_COUNT=16
+          fi
+          
+          # Clamp range strictly between 1 and 20
+          if [ "$RAW_COUNT" -lt 1 ]; then
+            COUNT=1
+          elif [ "$RAW_COUNT" -gt 20 ]; then
+            COUNT=20
+          else
+            COUNT=$RAW_COUNT
+          fi
+
+          SHARDS=$(python3 -c "import json; print(json.dumps(list(range(1, $COUNT + 1))))")
+          echo "matrix={\"shard\":$SHARDS, \"total_shards\":[$COUNT]}" >> $GITHUB_OUTPUT
+
+  run-automation:
+    needs: setup-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
+    timeout-minutes: 340
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python & Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install System & VNC Tools
         run: |
           sudo apt-get update
           DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-            xvfb x11vnc novnc websockify wget google-chrome-stable npm
+            xvfb x11vnc novnc websockify npm
           sudo npm install -g localtunnel
 
-      - name: Start Virtual Display & Desktop Tools
+      - name: Install Python & Playwright Chromium
         run: |
-          # 1. Start Xvfb Virtual Display (1080p resolution)
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt playwright requests
+          playwright install --with-deps chromium
+
+      - name: Start Live Web VNC Stream
+        run: |
           Xvfb :99 -screen 0 1920x1080x24 &
           export DISPLAY=:99
           sleep 2
           
-          # 2. Start VNC Server (Allows control & mouse clicks)
           x11vnc -display :99 -forever -shared -rfbport 5900 -nopw &
           sleep 2
           
-          # 3. Start noVNC Web Proxy on Port 6080
           /usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
           sleep 3
-
-      - name: Launch Live Google Chrome
-        run: |
-          export DISPLAY=:99
           
-          # Launch Google Chrome in non-headless mode
-          google-chrome \
-            --no-sandbox \
-            --disable-dev-shm-usage \
-            --window-size=1920,1080 \
-            --start-maximized \
-            "https://www.google.com" &
-          sleep 3
-
-      - name: Expose Live Stream & Keep Runner Alive
-        run: |
-          # Start LocalTunnel to expose port 6080 to the web
           lt --port 6080 > lt.log 2>&1 &
-          sleep 6
-
+          sleep 5
+          
           TUNNEL_URL=$(grep -o 'https://[^" ]*' lt.log | head -n 1)
-          
-          echo "=================================================================="
-          echo "  YOUR LIVE CLOUD BROWSER IS READY!"
-          echo "  OPEN THIS LINK IN YOUR WEB BROWSER:"
-          echo "  ${TUNNEL_URL}/vnc.html?autoconnect=true"
-          echo "=================================================================="
-          
-          # Sleep loop to keep the runner alive so you can use the browser
-          while true; do
-            sleep 60
-          done
+          echo "=========================================================="
+          echo "LIVE STREAM URL (SHARD ${{ matrix.shard }}/${{ matrix.total_shards }}):"
+          echo "${TUNNEL_URL}/vnc.html?host=${TUNNEL_URL#https://}&port=443"
+          echo "=========================================================="
+
+      - name: Run Script (Shard ${{ matrix.shard }}/${{ matrix.total_shards }})
+        env:
+          ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
+          DISPLAY: ":99"
+          SHARD_INDEX: ${{ matrix.shard }}
+          TOTAL_SHARDS: ${{ matrix.total_shards }}
+        run: python -u bot.py
+
+      - name: Upload Execution Videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-videos-shard-${{ matrix.shard }}-${{ github.run_number }}
+          path: videos/
+          retention-days: 7
+
