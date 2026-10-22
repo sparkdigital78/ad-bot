@@ -4,6 +4,7 @@ import signal
 import sys
 import random
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 
 current_context = None
 
@@ -53,13 +54,18 @@ if not SHARD_ASSIGNED_EMAILS:
     print(f"--> [SHARD {shard_index}] No accounts assigned to this worker. Exiting cleanly...")
     sys.exit(0)
 
-# Stagger startup to prevent parallel login collisions
-startup_delay = (shard_index - 1) * random.randint(2, 5)
+# Stagger startup with randomized jitter to evade IP block correlation
+startup_delay = (shard_index - 1) * random.randint(5, 12)
 if startup_delay > 0:
     print(f"--> [STAGGER] Shard {shard_index} sleeping for {startup_delay}s before starting...")
     time.sleep(startup_delay)
 
 ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(SHARD_ASSIGNED_EMAILS)]
+
+
+def human_delay(min_s=1.0, max_s=2.5):
+    """Adds natural human pauses between actions."""
+    time.sleep(random.uniform(min_s, max_s))
 
 
 def purge_popups(page):
@@ -92,6 +98,7 @@ def handle_daily_checkin_modal(page):
         checkin_btn = page.locator("button:has-text('Check In'), div:has-text('Check In')").last
         if checkin_btn.is_visible():
             print("--> [POPUP] Daily Check-in modal detected. Clicking 'Check In'...")
+            human_delay(0.5, 1.2)
             checkin_btn.click(force=True)
             page.wait_for_timeout(1500)
             purge_popups(page)
@@ -128,7 +135,7 @@ def force_unpause_videos(page):
 
 
 def check_daily_limit_reached(page):
-    """Checks for daily limit phrase."""
+    """Checks for the exact daily limit phrase."""
     limit_phrases = [
         "You have used all your ad watch opportunities for today",
         "Please try again tomorrow",
@@ -330,10 +337,12 @@ def click_ok_button(page):
 
 def click_watch_ad(page):
     try:
-        page.wait_for_timeout(2500)
+        human_delay(1.5, 3.0)
 
-        page.mouse.wheel(0, 600)
-        page.wait_for_timeout(1000)
+        # Smooth human-like scroll down
+        for _ in range(3):
+            page.mouse.wheel(0, 200)
+            time.sleep(0.2)
 
         ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
         
@@ -344,7 +353,7 @@ def click_watch_ad(page):
             
             if btn.is_visible():
                 btn.scroll_into_view_if_needed()
-                page.wait_for_timeout(500)
+                human_delay(0.5, 1.0)
                 btn.click(force=True)
                 print("--> [CLICK] Found and clicked 'Go Now' for Watch Ad!")
                 clicked = True
@@ -407,26 +416,26 @@ def watch_single_ad_for_account(page, account):
     password = account["password"]
 
     print(f"--- Logging into: {email} ---")
-    page.goto("https://easemate.ai/Dashboard", wait_until="load")
-    page.wait_for_timeout(1000)
+    page.goto("https://easemate.ai/Dashboard", wait_until="networkidle")
+    human_delay(1.0, 2.0)
 
     handle_daily_checkin_modal(page)
-    page.wait_for_timeout(1000)
+    human_delay(0.5, 1.0)
 
     page.get_by_text("Log In", exact=True).first.click()
-    page.wait_for_timeout(1000)
+    human_delay(1.0, 1.5)
 
     try:
         email_option = page.get_by_text("Continue with Email", exact=True)
         if email_option.is_visible():
             email_option.click()
-            page.wait_for_timeout(1000)
+            human_delay(0.8, 1.5)
     except Exception:
         pass
 
     page.wait_for_selector("input[placeholder='Enter your email address']")
-    page.fill("input[placeholder='Enter your email address']", email)
-    page.wait_for_timeout(1000)
+    page.type("input[placeholder='Enter your email address']", email, delay=random.randint(40, 90))
+    human_delay(0.5, 1.0)
 
     try:
         limit_err = page.locator("text=/signature limit exceeded/i")
@@ -436,8 +445,8 @@ def watch_single_ad_for_account(page, account):
     except Exception:
         pass
 
-    page.fill("input[placeholder='Enter your Password']", password)
-    page.wait_for_timeout(1000)
+    page.type("input[placeholder='Enter your Password']", password, delay=random.randint(40, 90))
+    human_delay(0.5, 1.0)
 
     page.get_by_role("button", name="Log in").last.click()
     page.wait_for_timeout(4000)
@@ -454,11 +463,11 @@ def watch_single_ad_for_account(page, account):
 
     print(f"[{email}] Navigating to Earn Credits page...")
     page.goto("https://easemate.ai/earn-credits", wait_until="load")
-    page.wait_for_timeout(3000)
+    human_delay(2.0, 3.5)
 
     handle_daily_checkin_modal(page)
     page.mouse.wheel(0, 500)
-    page.wait_for_timeout(1000)
+    human_delay(1.0, 1.5)
 
     if check_daily_limit_reached(page):
         print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
@@ -474,7 +483,7 @@ def watch_single_ad_for_account(page, account):
     if ad_status is False:
         print(f"[{email}] Ad failed to load. Reloading earn-credits page...")
         page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(3000)
+        human_delay(2.0, 3.5)
         handle_daily_checkin_modal(page)
         page.mouse.wheel(0, 500)
 
@@ -508,7 +517,7 @@ def watch_single_ad_for_account(page, account):
 
     page.wait_for_timeout(1000)
     click_ok_button(page)
-    page.wait_for_timeout(2000)
+    human_delay(1.5, 2.5)
 
     if check_daily_limit_reached(page):
         print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
@@ -539,7 +548,6 @@ def run_all_accounts():
             ]
         )
 
-        # Round-robin loop: continues rotating until active_accounts is empty
         while active_accounts:
             print("\n" + "=" * 70)
             print(f"[ROUND {round_number}] Active accounts remaining in shard: {len(active_accounts)}")
@@ -553,14 +561,27 @@ def run_all_accounts():
                 print(f"[SHARD {shard_index}/{total_shards}] Round {round_number} -> Account: {email}")
                 print("-" * 50)
 
+                # Randomized viewport resolutions to prevent canvas fingerprinting
+                v_width = random.choice([1920, 1536, 1440, 1366])
+                v_height = random.choice([1080, 864, 900, 768])
+
                 context = browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
+                    viewport={"width": v_width, "height": v_height},
                     record_video_dir="videos/",
                     record_video_size={"width": 1920, "height": 1080},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                    locale="en-US",
+                    timezone_id="America/New_York"
                 )
                 
                 page = context.new_page()
+                
+                # Apply Playwright Stealth Plugin bypasses
+                try:
+                    stealth_sync(page)
+                except Exception:
+                    pass
+
                 page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 current_context = context
 
@@ -577,7 +598,6 @@ def run_all_accounts():
                 context.close()
                 current_context = None
 
-            # Remove dropped accounts after cycle completion
             for acc in accounts_to_remove:
                 if acc in active_accounts:
                     active_accounts.remove(acc)
