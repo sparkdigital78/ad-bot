@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1]
 
     steps:
       - name: Checkout Code
@@ -28,12 +28,12 @@ jobs:
           pip install playwright requests
           playwright install chromium --with-deps
 
-      - name: Run Script (Shard ${{ matrix.shard }}/7)
+      - name: Run Script (Shard ${{ matrix.shard }}/1)
         env:
           ALL_EMAILS: ${{ secrets.ALL_EMAILS }}
           ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
           SHARD_INDEX: ${{ matrix.shard }}
-          TOTAL_SHARDS: 7
+          TOTAL_SHARDS: 1
         run: xvfb-run python -u bot.py
 
       - name: Upload Execution Videos
