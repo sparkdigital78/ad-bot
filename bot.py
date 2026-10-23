@@ -7,6 +7,9 @@ from playwright.sync_api import sync_playwright
 
 current_context = None
 
+# Ensure video artifact directory exists from start
+os.makedirs("videos", exist_ok=True)
+
 
 def shutdown_handler(sig, frame):
     global current_context
@@ -47,14 +50,14 @@ SHARD_ASSIGNED_EMAILS = [
 ]
 
 print(f"--> [SHARD {shard_index}/{total_shards}] Total list size: {len(ALL_EMAILS)}")
-print(f"--> [SHARD {shard_index}/{total_shards}] Assigned to this shard: {len(SHARD_ASSIGNED_EMAILS)}")
+print(f"--> [SHARD {shard_index}/{total_shards}] Assigned to this shard ({len(SHARD_ASSIGNED_EMAILS)}): {SHARD_ASSIGNED_EMAILS}")
 
 if not SHARD_ASSIGNED_EMAILS:
     print(f"--> [SHARD {shard_index}] No accounts assigned to this worker. Exiting cleanly...")
     sys.exit(0)
 
-# Stagger startup with randomized jitter to evade IP block correlation
-startup_delay = (shard_index - 1) * random.randint(5, 12)
+# Stagger startup with randomized jitter
+startup_delay = (shard_index - 1) * random.randint(3, 8)
 if startup_delay > 0:
     print(f"--> [STAGGER] Shard {shard_index} sleeping for {startup_delay}s before starting...")
     time.sleep(startup_delay)
@@ -182,7 +185,7 @@ def click_close_button(page):
 
         for frame in page.frames:
             close_selectors = [
-                "text=/^close\$/i",
+                "text=/^close$/i",
                 "text='Close'",
                 "text='close'",
                 "#dismiss-button",
@@ -314,7 +317,7 @@ def click_ok_button(page):
             locators = [
                 frame.get_by_role("button", name="OK"),
                 frame.get_by_text("OK", exact=True),
-                frame.locator("text=/^ok\$/i"),
+                frame.locator("text=/^ok$/i"),
                 frame.locator("button:has-text('OK')"),
                 frame.locator("div[role='dialog'] button")
             ]
@@ -338,7 +341,6 @@ def click_watch_ad(page):
     try:
         human_delay(1.5, 3.0)
 
-        # Smooth human-like scroll down
         for _ in range(3):
             page.mouse.wheel(0, 200)
             time.sleep(0.2)
@@ -512,4 +514,101 @@ def watch_single_ad_for_account(page, account):
 
     print(f"[{email}] Closing ad player...")
     page.wait_for_timeout(1000)
-    click_
+    click_close_button(page)
+
+    page.wait_for_timeout(1000)
+    click_ok_button(page)
+    human_delay(1.5, 2.5)
+
+    if check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
+
+    print(f"[{email}] SUCCESS: Watched 1 ad successfully! Switching to next account in cycle.")
+    return "SUCCESS"
+
+
+def run_all_accounts():
+    global current_context
+
+    active_accounts = list(ACCOUNTS)
+    round_number = 1
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--window-size=1920,1080",
+                "--autoplay-policy=no-user-gesture-required"
+            ]
+        )
+
+        while active_accounts:
+            print("\n" + "=" * 70)
+            print(f"[ROUND {round_number}] Active accounts remaining in shard: {len(active_accounts)}")
+            print("=" * 70)
+
+            accounts_to_remove = []
+
+            for account in active_accounts:
+                email = account["email"]
+                print("\n" + "-" * 50)
+                print(f"[SHARD {shard_index}/{total_shards}] Round {round_number} -> Account: {email}")
+                print("-" * 50)
+
+                v_width = random.choice([1920, 1536, 1440, 1366])
+                v_height = random.choice([1080, 864, 900, 768])
+
+                context = browser.new_context(
+                    viewport={"width": v_width, "height": v_height},
+                    record_video_dir="videos/",
+                    record_video_size={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                    locale="en-US",
+                    timezone_id="America/New_York"
+                )
+                
+                page = context.new_page()
+                
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    window.chrome = { runtime: {} };
+                """)
+                
+                current_context = context
+
+                try:
+                    status = watch_single_ad_for_account(page, account)
+                    
+                    if status == "LIMIT_REACHED":
+                        print(f"--> [DROPPED] Removing {email} permanently from future rounds.")
+                        accounts_to_remove.append(account)
+
+                except Exception as e:
+                    print(f"Error executing {email}: {e}")
+
+                context.close()
+                current_context = None
+
+            for acc in accounts_to_remove:
+                if acc in active_accounts:
+                    active_accounts.remove(acc)
+
+            round_number += 1
+
+        print("\n" + "=" * 70)
+        print(f"SUMMARY: ALL ACCOUNTS IN SHARD {shard_index}/{total_shards} HAVE COMPLETED THEIR DAILY LIMITS!")
+        print("=" * 70)
+
+        browser.close()
+
+
+if __name__ == "__main__":
+    run_all_accounts()
