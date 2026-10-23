@@ -4,14 +4,34 @@ on:
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      total_shards:
+        description: 'Total Shards (Number of Parallel Workers)'
+        required: true
+        default: '7'
 
 jobs:
+  # Dynamic Matrix Setup
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      shard_matrix: ${{ steps.set-matrix.outputs.shard_matrix }}
+      total_shards: ${{ steps.set-matrix.outputs.total_shards }}
+    steps:
+      - id: set-matrix
+        run: |
+          SHARDS="${{ github.event.inputs.total_shards || '7' }}"
+          MATRIX_JSON=$(python -c "import json; print(json.dumps(list(range(1, int('$SHARDS') + 1))))")
+          echo "shard_matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          echo "total_shards=$SHARDS" >> $GITHUB_OUTPUT
+
   run-automation:
+    needs: setup-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1]
+        shard: ${{ fromJson(needs.setup-matrix.outputs.shard_matrix) }}
 
     steps:
       - name: Checkout Code
@@ -28,13 +48,20 @@ jobs:
           pip install playwright requests
           playwright install chromium --with-deps
 
-      - name: Run Script (Shard ${{ matrix.shard }}/1)
+      - name: Setup Virtual Display (Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+
+      - name: Run Script (Shard ${{ matrix.shard }}/${{ needs.setup-matrix.outputs.total_shards }})
         env:
           ALL_EMAILS: ${{ secrets.ALL_EMAILS }}
           ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
           SHARD_INDEX: ${{ matrix.shard }}
-          TOTAL_SHARDS: 1
-        run: xvfb-run python -u bot.py
+          TOTAL_SHARDS: ${{ needs.setup-matrix.outputs.total_shards }}
+        run: python -u bot.py
 
       - name: Upload Execution Videos
         if: always()
@@ -43,3 +70,4 @@ jobs:
           name: execution-videos-shard-${{ matrix.shard }}
           path: videos/
           if-no-files-found: ignore
+          
