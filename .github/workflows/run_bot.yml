@@ -9,9 +9,12 @@ on:
         description: 'Total Shards (Number of Parallel Workers)'
         required: true
         default: '7'
+      enable_live_view:
+        description: 'Enable Live VNC Stream (true/false)'
+        required: false
+        default: 'true'
 
 jobs:
-  # Dynamic Matrix Setup
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -48,12 +51,21 @@ jobs:
           pip install playwright requests
           playwright install chromium --with-deps
 
-      - name: Setup Virtual Display (Xvfb)
+      - name: Setup Virtual Display & VNC Server
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb
+          sudo apt-get install -y xvfb x11vnc fluxbox
           Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+          sleep 1
+          fluxbox > /dev/null 2>&1 &
+          x11vnc -display :99 -forever -shared -rfbport 5900 -nopw > /dev/null 2>&1 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
+
+      - name: Start Live Web VNC Stream (tmate)
+        if: ${{ github.event.inputs.enable_live_view == 'true' }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: false
 
       - name: Run Script (Shard ${{ matrix.shard }}/${{ needs.setup-matrix.outputs.total_shards }})
         env:
