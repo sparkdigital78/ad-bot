@@ -34,7 +34,7 @@ jobs:
           ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
           SHARD_INDEX: ${{ matrix.shard }}
           TOTAL_SHARDS: 7
-        run: python -u bot.py
+        run: xvfb-run python -u bot.py
 
       - name: Upload Execution Videos
         if: always()
