@@ -5,7 +5,7 @@ import sys
 import random
 from playwright.sync_api import sync_playwright
 
-# Ensure output directory exists immediately at startup
+# Ensure video output directory exists immediately at startup
 os.makedirs("videos", exist_ok=True)
 
 current_context = None
@@ -548,4 +548,4 @@ def run_all_accounts():
                     print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
                     active_batch.insert(current_idx, new_acc)
                 else:
-              
+        
