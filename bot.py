@@ -317,4 +317,202 @@ def click_ok_button(page):
             locators = [
                 frame.get_by_role("button", name="OK"),
                 frame.get_by_text("OK", exact=True),
-                frame.locator
+                frame.locator("text=/^ok\$/i"),
+                frame.locator("button:has-text('OK')"),
+                frame.locator("div[role='dialog'] button")
+            ]
+            for loc in locators:
+                try:
+                    count = loc.count()
+                    for i in range(count):
+                        element = loc.nth(i)
+                        if element.is_visible():
+                            element.click(force=True)
+                            page.wait_for_timeout(1000)
+                            return True
+                except Exception:
+                    pass
+        page.wait_for_timeout(800)
+
+    return True
+
+
+def click_watch_ad(page):
+    try:
+        purge_popups(page)
+        human_delay(1.0, 2.0)
+
+        ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
+        
+        clicked = False
+        if ad_title.is_visible():
+            card_container = page.locator("div").filter(has=ad_title).filter(has_text="Go Now").last
+            btn = card_container.locator("button, a, div").filter(has_text="Go Now").last
+            
+            if btn.is_visible():
+                btn.scroll_into_view_if_needed(timeout=3000)
+                human_delay(0.5, 1.0)
+                btn.click(force=True)
+                print("--> [CLICK] Found and clicked 'Go Now' for Watch Ad!")
+                clicked = True
+
+        if not clicked:
+            page.evaluate("""() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                const targetText = elements.find(el => el.textContent && el.textContent.trim() === 'Watch ad to earn credits');
+                if (targetText) {
+                    let parent = targetText.parentElement;
+                    while (parent && !parent.textContent.includes('Go Now')) {
+                        parent = parent.parentElement;
+                    }
+                    if (parent) {
+                        const goBtn = Array.from(parent.querySelectorAll('*')).find(el => el.textContent && el.textContent.trim().toLowerCase() === 'go now');
+                        if (goBtn) {
+                            goBtn.scrollIntoView({ block: 'center', inline: 'center' });
+                            goBtn.click();
+                        }
+                    }
+                }
+            }""")
+
+        page.wait_for_timeout(2500)
+
+        handle_daily_checkin_modal(page)
+
+        if check_daily_limit_reached(page):
+            print("--> [LIMIT POPUP DETECTED] Daily limit toast verified!")
+            return "LIMIT_REACHED"
+
+        page.wait_for_timeout(2000)
+
+        has_ad = page.evaluate("""() => {
+            const googleFullscreen = document.querySelector('[id*="goog"], [src*="googleads"], [id*="google_ads"], iframe[src*="doubleclick"]');
+            const videoElement = document.querySelector('video');
+            
+            if (videoElement || googleFullscreen) return true;
+            return false;
+        }""")
+
+        if has_ad:
+            force_unpause_videos(page)
+            return True
+
+        for frame in page.frames:
+            if "google" in frame.url or "doubleclick" in frame.url:
+                force_unpause_videos(page)
+                return True
+
+        return False
+    except Exception as e:
+        print(f"--> Error in click_watch_ad: {e}")
+        return False
+
+
+def watch_single_ad_for_account(page, account):
+    """Logs into account, watches 1 ad, and returns status."""
+    email = account["email"]
+    password = account["password"]
+
+    print(f"--- Logging into: {email} ---")
+    page.goto("https://easemate.ai/Dashboard", wait_until="networkidle")
+    human_delay(1.0, 2.0)
+
+    handle_daily_checkin_modal(page)
+    human_delay(0.5, 1.0)
+
+    page.get_by_text("Log In", exact=True).first.click()
+    human_delay(1.0, 1.5)
+
+    try:
+        email_option = page.get_by_text("Continue with Email", exact=True)
+        if email_option.is_visible():
+            email_option.click()
+            human_delay(0.8, 1.5)
+    except Exception:
+        pass
+
+    page.wait_for_selector("input[placeholder='Enter your email address']")
+    page.type("input[placeholder='Enter your email address']", email, delay=random.randint(40, 90))
+    human_delay(0.5, 1.0)
+
+    try:
+        limit_err = page.locator("text=/signature limit exceeded/i")
+        if limit_err.count() > 0 and limit_err.first.is_visible():
+            print(f"[{email}] SIGNATURE LIMIT EXCEEDED on login input! Dropping account from round-robin...")
+            return "LIMIT_REACHED"
+    except Exception:
+        pass
+
+    page.type("input[placeholder='Enter your Password']", password, delay=random.randint(40, 90))
+    human_delay(0.5, 1.0)
+
+    page.get_by_role("button", name="Log in").last.click()
+    page.wait_for_timeout(4000)
+
+    handle_daily_checkin_modal(page)
+
+    try:
+        limit_err = page.locator("text=/signature limit exceeded/i")
+        if limit_err.count() > 0 and limit_err.first.is_visible():
+            print(f"[{email}] SIGNATURE LIMIT EXCEEDED after submit! Dropping account from round-robin...")
+            return "LIMIT_REACHED"
+    except Exception:
+        pass
+
+    print(f"[{email}] Navigating to Earn Credits page...")
+    page.goto("https://easemate.ai/earn-credits", wait_until="load")
+    human_delay(2.0, 3.5)
+
+    handle_daily_checkin_modal(page)
+    page.mouse.wheel(0, 500)
+    human_delay(1.0, 1.5)
+
+    if check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
+
+    print(f"[{email}] Attempting to watch 1 ad...")
+    ad_status = click_watch_ad(page)
+
+    if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
+
+    if ad_status is False:
+        print(f"[{email}] Ad failed to load. Reloading earn-credits page...")
+        page.goto("https://easemate.ai/earn-credits", wait_until="load")
+        human_delay(2.0, 3.5)
+        handle_daily_checkin_modal(page)
+        page.mouse.wheel(0, 500)
+
+        if check_daily_limit_reached(page):
+            print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+            return "LIMIT_REACHED"
+
+        ad_status = click_watch_ad(page)
+        if ad_status == "LIMIT_REACHED" or check_daily_limit_reached(page):
+            print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+            return "LIMIT_REACHED"
+
+        if ad_status is False:
+            print(f"[{email}] Ad network served no ad. Moving to next account in rotation.")
+            return "NO_AD"
+
+    page.wait_for_timeout(1000)
+
+    if check_daily_limit_reached(page):
+        print(f"[{email}] >>> DAILY LIMIT DETECTED! Dropping {email} permanently from cycle. <<<")
+        return "LIMIT_REACHED"
+
+    print(f"[{email}] Watching video ad (35s)...")
+    for _ in range(7):
+        force_unpause_videos(page)
+        time.sleep(5)
+
+    print(f"[{email}] Closing ad player...")
+    page.wait_for_timeout(1000)
+    click_close_button(page)
+
+    page.wait_for_timeout(1000)
+    click_ok_button(page)
+    human_delay(1.5, 2.5)
