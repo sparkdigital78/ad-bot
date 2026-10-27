@@ -5,6 +5,9 @@ import sys
 import random
 from playwright.sync_api import sync_playwright
 
+# Ensure output directory exists immediately at startup
+os.makedirs("videos", exist_ok=True)
+
 current_context = None
 
 
@@ -482,8 +485,6 @@ def run_all_accounts():
     cycle_count = 1
     current_idx = 0
 
-    os.makedirs("videos", exist_ok=True)
-
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=False,
@@ -533,9 +534,10 @@ def run_all_accounts():
             except Exception as e:
                 print(f"Error executing {email}: {e}")
                 status = "ERROR"
-
-            context.close()
-            current_context = None
+            finally:
+                if current_context:
+                    current_context.close()
+                    current_context = None
 
             if status == "LIMIT_REACHED":
                 print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
@@ -546,6 +548,4 @@ def run_all_accounts():
                     print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
                     active_batch.insert(current_idx, new_acc)
                 else:
-                    print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
-            else:
-                current_idx += 1
+              
