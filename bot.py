@@ -152,30 +152,33 @@ def check_daily_limit_reached(page):
 
 
 def open_login_modal(page):
-    """Reliably opens the Login modal across various landing page states."""
+    """Robust login modal trigger using direct JS evaluate & selector fallbacks."""
     for attempt in range(4):
         try:
             purge_popups(page)
             dismiss_all_modals_and_checkin(page)
 
-            # Check if login modal is already visible
+            # Check if login input is already present
             if page.locator("input[placeholder='Enter your email address']").is_visible():
                 return True
 
-            # Try primary click options
-            login_btn = page.locator("button:has-text('Log in'), a:has-text('Log in'), div:has-text('Log in')").first
-            if login_btn.is_visible():
-                login_btn.click(force=True)
-            else:
-                page.get_by_text("Log In", exact=True).first.click(force=True)
-
+            # Trigger login popup via JS DOM search (avoids top-banner layout shift issues)
+            page.evaluate("""() => {
+                const allElements = Array.from(document.querySelectorAll('button, a, div, span'));
+                const loginEl = allElements.find(el => {
+                    const txt = (el.textContent || '').trim();
+                    return txt === 'Log in' || txt === 'Log In' || txt === 'Sign in' || txt === 'Sign In';
+                });
+                if (loginEl) loginEl.click();
+            }""")
+            
             page.wait_for_timeout(1500)
 
             # Click 'Continue with Email' if option appears
             try:
-                email_option = page.get_by_text("Continue with Email", exact=True)
-                if email_option.is_visible():
-                    email_option.click(force=True)
+                email_btn = page.locator("text='Continue with Email'")
+                if email_btn.count() > 0 and email_btn.first.is_visible():
+                    email_btn.first.click(force=True)
                     page.wait_for_timeout(1000)
             except Exception:
                 pass
@@ -380,15 +383,12 @@ def process_single_account(page, account):
     password = account["password"]
 
     print(f"--- Logging into: {email} ---")
-    page.goto("https://easemate.ai/", wait_until="load")
-    page.wait_for_timeout(1000)
+    page.goto("https://easemate.ai/earn-credits", wait_until="load")
+    page.wait_for_timeout(1500)
 
     if not open_login_modal(page):
-        print(f"[{email}] ERROR: Could not open login modal. Retrying direct navigation...")
-        page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(2000)
-        if not open_login_modal(page):
-            return "ERROR"
+        print(f"[{email}] ERROR: Could not open login modal.")
+        return "ERROR"
 
     page.wait_for_selector("input[placeholder='Enter your email address']", timeout=10000)
     page.fill("input[placeholder='Enter your email address']", email)
@@ -398,13 +398,7 @@ def process_single_account(page, account):
     page.wait_for_timeout(800)
 
     page.get_by_role("button", name="Log in").last.click()
-    page.wait_for_timeout(3500)
-
-    dismiss_all_modals_and_checkin(page)
-
-    print(f"[{email}] Navigating to Earn Credits page...")
-    page.goto("https://easemate.ai/earn-credits", wait_until="load")
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(4000)
 
     dismiss_all_modals_and_checkin(page)
     purge_popups(page)
