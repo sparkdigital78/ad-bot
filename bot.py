@@ -10,6 +10,7 @@ os.makedirs("videos", exist_ok=True)
 
 current_context = None
 
+
 def shutdown_handler(sig, frame):
     global current_context
     print("\n--> [STOP / CANCEL DETECTED] Closing context to flush video file...")
@@ -20,6 +21,7 @@ def shutdown_handler(sig, frame):
         except Exception as e:
             print(f"--> Error closing context: {e}")
     sys.exit(0)
+
 
 signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
@@ -36,7 +38,6 @@ else:
     raw_emails = os.environ.get("ALL_EMAILS", "")
 
 email_password = os.environ.get("ACCOUNT_PASSWORD", "Chetan@2026")
-
 ALL_EMAILS = [e.strip().lower() for e in raw_emails.replace(",", " ").split() if e.strip()]
 
 shard_index = int(os.environ.get("SHARD_INDEX", "1"))
@@ -58,11 +59,55 @@ if not SHARD_ASSIGNED_EMAILS:
 ACCOUNTS = [{"id": i + 1, "email": email, "password": email_password} for i, email in enumerate(SHARD_ASSIGNED_EMAILS)]
 TARGET_BATCH_SIZE = 15
 
+
+def dismiss_all_modals_and_checkin(page):
+    """
+    Handles daily check-in (whether button is active or disabled)
+    and forcefully removes any modal overlay blocking the screen.
+    """
+    try:
+        page.wait_for_timeout(800)
+        
+        # 1. Check if Daily Check-In modal is present
+        page.evaluate("""() => {
+            const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"], [class*="overlay"]'));
+            modals.forEach(m => {
+                if (m.textContent && m.textContent.includes('Daily check-in')) {
+                    // Look for Check In button inside modal
+                    const checkInBtn = Array.from(m.querySelectorAll('button, div[role="button"], span')).find(
+                        b => b.textContent && b.textContent.trim().toLowerCase() === 'check in'
+                    );
+                    if (checkInBtn && !checkInBtn.disabled) {
+                        try { checkInBtn.click(); } catch(e) {}
+                    }
+                    
+                    // Look for Close 'X' button
+                    const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
+                    if (closeBtn) {
+                        try { closeBtn.click(); } catch(e) {}
+                    }
+                    
+                    // Remove modal directly from DOM to clear screen
+                    try { m.remove(); } catch(e) {}
+                }
+            });
+
+            // Also clean backdrop / overlay shadows
+            const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
+            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
+        }""")
+
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+    except Exception as e:
+        print(f"--> [POPUP DISMISS] Notice: {e}")
+
+
 def purge_popups(page):
-    """Dismisses generic side banner overlays, Kling promotional cards, and unwanted dialogs."""
+    """Dismisses side banner overlays, promo cards, and unwanted popups."""
     try:
         page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(200)
     except Exception:
         pass
 
@@ -70,49 +115,20 @@ def purge_popups(page):
         page.evaluate("""() => {
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
             dialogs.forEach(d => {
-                const isLogin = d.querySelector('input[placeholder*="email" i], input[type="email"]') || (d.textContent && d.textContent.includes('Sign in'));
-                const isCheckIn = d.textContent && d.textContent.includes('Daily check-in');
-                if (!isLogin && !isCheckIn) {
+                const isLogin = d.querySelector('input[placeholder*="email" i], input[type="email"]') ||
+                                (d.textContent && d.textContent.includes('Sign in'));
+                if (!isLogin) {
                     const closeBtn = d.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
                     if (closeBtn) {
                         try { closeBtn.click(); } catch(e) {}
-                    } else {
-                        try { d.remove(); } catch(e) {}
                     }
+                    try { d.remove(); } catch(e) {}
                 }
             });
         }""")
     except Exception:
         pass
 
-def handle_daily_checkin_modal(page):
-    """Detects 'Daily Check-in' popups, clicks 'Check In', claims points, and closes the modal."""
-    try:
-        page.wait_for_timeout(1000)
-        checkin_modal = page.locator("div").filter(has_text="Daily check-in to earn advanced points").first
-        if checkin_modal.count() > 0 and checkin_modal.is_visible():
-            print("--> [CHECK-IN] Daily Check-in modal detected!")
-            checkin_btn = page.locator("button:has-text('Check In'), div:has-text('Check In')").last
-            if checkin_btn.is_visible():
-                print("--> [CHECK-IN] Clicking 'Check In' button...")
-                checkin_btn.click(force=True)
-                page.wait_for_timeout(1500)
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(500)
-            page.evaluate("""() => {
-                const modal = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"]'))
-                    .find(el => el.textContent && el.textContent.includes('Daily check-in'));
-                if (modal) {
-                    const closeBtn = modal.querySelector('button, [class*="close"], svg, i');
-                    if (closeBtn) closeBtn.click();
-                    else modal.remove();
-                }
-            }""")
-            print("--> [CHECK-IN] Daily Check-in completed and modal closed successfully!")
-            return True
-    except Exception as e:
-        print(f"--> [CHECK-IN] Check-in handling notice: {e}")
-    return False
 
 def force_unpause_videos(page):
     try:
@@ -124,7 +140,9 @@ def force_unpause_videos(page):
                     v.play().catch(e => {});
                 });
             }
+
             playAllVideos(document);
+
             const iframes = document.querySelectorAll('iframe');
             iframes.forEach(f => {
                 try {
@@ -134,6 +152,7 @@ def force_unpause_videos(page):
         }""")
     except Exception:
         pass
+
 
 def check_daily_limit_reached(page):
     try:
@@ -146,12 +165,14 @@ def check_daily_limit_reached(page):
         pass
     return False
 
+
 def click_close_button(page):
     print("--> Waiting for 'Close' button to appear...")
+
     for attempt in range(15):
         force_unpause_videos(page)
         page.wait_for_timeout(1000)
-        
+
         for frame in page.frames:
             close_selectors = [
                 "text=/^close$/i",
@@ -199,7 +220,9 @@ def click_close_button(page):
                     }
                     return false;
                 }
+
                 if (clickCloseInDoc(document)) return true;
+
                 const iframes = document.querySelectorAll('iframe');
                 for (let f of iframes) {
                     try {
@@ -223,10 +246,11 @@ def click_close_button(page):
                     page.wait_for_timeout(200)
                 except Exception:
                     pass
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
+
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
 
     print("--> [RECOVERY] Ad overlay did not respond. Refreshing page to clear modal...")
     try:
@@ -235,10 +259,13 @@ def click_close_button(page):
         return True
     except Exception:
         pass
+
     return False
+
 
 def click_ok_button(page):
     page.wait_for_timeout(1000)
+    
     for _ in range(3):
         try:
             page.keyboard.press("Enter")
@@ -246,90 +273,108 @@ def click_ok_button(page):
         except Exception:
             pass
 
-    try:
-        ok_clicked = page.evaluate("""() => {
-            function findOK(doc) {
-                const buttons = Array.from(doc.querySelectorAll('button, div[role="button"], a, span'));
-                for (let btn of buttons) {
-                    const txt = btn.textContent ? btn.textContent.trim().toLowerCase() : '';
-                    if ((txt === 'ok' || txt === 'claim' || txt === 'confirm' || txt === 'got it') && btn.offsetWidth > 0 && btn.offsetHeight > 0) {
-                        btn.click();
-                        return true;
+        try:
+            ok_clicked = page.evaluate("""() => {
+                function findOK(doc) {
+                    const buttons = Array.from(doc.querySelectorAll('button, div[role="button"], a, span'));
+                    for (let btn of buttons) {
+                        const txt = btn.textContent ? btn.textContent.trim().toLowerCase() : '';
+                        if ((txt === 'ok' || txt === 'claim' || txt === 'confirm' || txt === 'got it') && btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+                            btn.click();
+                            return true;
+                        }
                     }
+                    return false;
+                }
+
+                if (findOK(document)) return true;
+
+                const iframes = document.querySelectorAll('iframe');
+                for (let f of iframes) {
+                    try {
+                        if (f.contentDocument && findOK(f.contentDocument)) return true;
+                    } catch(e) {}
                 }
                 return false;
-            }
-            if (findOK(document)) return true;
-            const iframes = document.querySelectorAll('iframe');
-            for (let f of iframes) {
-                try {
-                    if (f.contentDocument && findOK(f.contentDocument)) return true;
-                } catch(e) {}
-            }
-            return false;
-        }""")
-        if ok_clicked:
-            page.wait_for_timeout(1000)
-            return True
-    except Exception:
-        pass
+            }""")
+            if ok_clicked:
+                page.wait_for_timeout(1000)
+                return True
+        except Exception:
+            pass
 
-    for frame in page.frames:
-        locators = [
-            frame.get_by_role("button", name="OK"),
-            frame.get_by_text("OK", exact=True),
-            frame.locator("text=/^ok$/i"),
-            frame.locator("button:has-text('OK')"),
-            frame.locator("div[role='dialog'] button")
-        ]
-        for loc in locators:
-            try:
-                count = loc.count()
-                for i in range(count):
-                    element = loc.nth(i)
-                    if element.is_visible():
-                        element.click(force=True)
-                        page.wait_for_timeout(1000)
-                        return True
-            except Exception:
-                pass
+        for frame in page.frames:
+            locators = [
+                frame.get_by_role("button", name="OK"),
+                frame.get_by_text("OK", exact=True),
+                frame.locator("text=/^ok$/i"),
+                frame.locator("button:has-text('OK')"),
+                frame.locator("div[role='dialog'] button")
+            ]
+            for loc in locators:
+                try:
+                    count = loc.count()
+                    for i in range(count):
+                        element = loc.nth(i)
+                        if element.is_visible():
+                            element.click(force=True)
+                            page.wait_for_timeout(1000)
+                            return True
+                except Exception:
+                    pass
+        page.wait_for_timeout(800)
 
-    page.wait_for_timeout(800)
     return True
+
 
 def click_watch_ad(page):
     try:
+        dismiss_all_modals_and_checkin(page)
         purge_popups(page)
-        handle_daily_checkin_modal(page)
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(1000)
 
-        btn = page.locator("div").filter(has_text="Watch ad to earn credits").get_by_text("Go Now").last
-        if btn.is_visible():
-            btn.scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            btn.click(force=True)
-
+        # Scroll to 'Watch ad to earn credits' section
         page.evaluate("""() => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            const watchAdTitle = allElements.find(el => el.children.length === 0 && el.textContent.includes('Watch ad to earn credits'));
-            if (!watchAdTitle) return;
-            let card = watchAdTitle;
-            while (card && card.parentElement && !card.textContent.includes('10 ads/day')) {
+            const el = Array.from(document.querySelectorAll('*')).find(
+                e => e.children.length === 0 && e.textContent.includes('Watch ad to earn credits')
+            );
+            if (el) el.scrollIntoView({ block: 'center', inline: 'center' });
+        }""")
+        page.wait_for_timeout(800)
+
+        # Click Go Now specifically for Watch Ad
+        clicked = page.evaluate("""() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const title = elements.find(el => el.children.length === 0 && el.textContent.includes('Watch ad to earn credits'));
+            if (!title) return false;
+
+            let card = title;
+            while (card && card.parentElement && !card.textContent.includes('Go Now')) {
                 card = card.parentElement;
             }
-            if (!card) card = watchAdTitle.closest('div');
-            if (!card) return;
-            const goNowBtn = Array.from(card.querySelectorAll('*')).find(el => el.textContent.trim().toLowerCase().includes('go now'));
-            if (goNowBtn) goNowBtn.click();
+            if (!card) return false;
+
+            const btn = Array.from(card.querySelectorAll('*')).find(
+                el => el.textContent && el.textContent.trim().toLowerCase() === 'go now'
+            );
+            if (btn) {
+                btn.click();
+                return true;
+            }
+            return false;
         }""")
 
+        if clicked:
+            print("--> [CLICK] Watch Ad 'Go Now' clicked successfully via JavaScript!")
+
         page.wait_for_timeout(3500)
-        handle_daily_checkin_modal(page)
+        dismiss_all_modals_and_checkin(page)
 
         has_ad = page.evaluate("""() => {
             const googleFullscreen = document.querySelector('[id*="goog_fullscreen"], [src*="googleads"], [id*="google_ads"]');
             const videoElement = document.querySelector('video');
             const activeModal = document.querySelector('div[role="dialog"], [class*="modal-open"], [class*="overlay"]');
+            
             if (videoElement || googleFullscreen) return true;
             if (activeModal && !activeModal.textContent.includes('Daily check-in')) {
                 const rect = activeModal.getBoundingClientRect();
@@ -341,22 +386,23 @@ def click_watch_ad(page):
         if has_ad:
             force_unpause_videos(page)
             return True
+
         return False
     except Exception as e:
         print(f"--> Error in click_watch_ad: {e}")
         return False
 
+
 def process_single_account(page, account):
     email = account["email"]
     password = account["password"]
-    
+
     print(f"--- Logging into: {email} ---")
     page.goto("https://easemate.ai/", wait_until="load")
     page.wait_for_timeout(1000)
-    
+
     purge_popups(page)
-    handle_daily_checkin_modal(page)
-    page.wait_for_timeout(1000)
+    dismiss_all_modals_and_checkin(page)
 
     page.get_by_text("Log In", exact=True).first.click()
     page.wait_for_timeout(1000)
@@ -371,21 +417,23 @@ def process_single_account(page, account):
 
     page.wait_for_selector("input[placeholder='Enter your email address']")
     page.fill("input[placeholder='Enter your email address']", email)
-    page.wait_for_timeout(1000)
-    page.fill("input[placeholder='Enter your Password']", password)
-    page.wait_for_timeout(1000)
-    page.get_by_role("button", name="Log in").last.click()
-    page.wait_for_timeout(4000)
+    page.wait_for_timeout(800)
 
-    handle_daily_checkin_modal(page)
+    page.fill("input[placeholder='Enter your Password']", password)
+    page.wait_for_timeout(800)
+
+    page.get_by_role("button", name="Log in").last.click()
+    page.wait_for_timeout(3500)
+
+    dismiss_all_modals_and_checkin(page)
 
     print(f"[{email}] Navigating to Earn Credits page...")
     page.goto("https://easemate.ai/earn-credits", wait_until="load")
-    page.wait_for_timeout(3000)
-    
+    page.wait_for_timeout(2500)
+
+    dismiss_all_modals_and_checkin(page)
     purge_popups(page)
-    handle_daily_checkin_modal(page)
-    page.wait_for_timeout(1000)
+
     page.mouse.wheel(0, 500)
     page.wait_for_timeout(1000)
 
@@ -394,18 +442,21 @@ def process_single_account(page, account):
         return "LIMIT_REACHED"
 
     print(f"[{email}] Starting ad task...")
+    
     ad_started = False
     for attempt in range(3):
+        dismiss_all_modals_and_checkin(page)
         purge_popups(page)
-        handle_daily_checkin_modal(page)
         page.wait_for_timeout(1000)
+
         if click_watch_ad(page):
             ad_started = True
             break
+        
         print(f"[{email}] Warning: Ad failed to launch (attempt {attempt + 1}/3). Reloading page to retry...")
         page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(3000)
-        handle_daily_checkin_modal(page)
+        page.wait_for_timeout(2500)
+        dismiss_all_modals_and_checkin(page)
         page.mouse.wheel(0, 500)
 
     if not ad_started:
@@ -413,6 +464,7 @@ def process_single_account(page, account):
         return "ERROR"
 
     page.wait_for_timeout(1000)
+
     if check_daily_limit_reached(page):
         print(f"[{email}] LIMIT DETECTED: 'You have used all your ad watch opportunities for today.'")
         return "LIMIT_REACHED"
@@ -425,12 +477,14 @@ def process_single_account(page, account):
     print(f"[{email}] Closing ad player...")
     page.wait_for_timeout(1000)
     click_close_button(page)
+
     page.wait_for_timeout(1000)
     click_ok_button(page)
     page.wait_for_timeout(2000)
 
     print(f"[{email}] SUCCESS: Ad cycle completed and reward claimed!")
     return "SUCCESS"
+
 
 def run_all_accounts():
     global current_context
@@ -462,10 +516,9 @@ def run_all_accounts():
             if current_idx >= len(active_batch):
                 current_idx = 0
                 cycle_count += 1
-
-            print("\n" + "=" * 60)
-            print(f"   STARTING CYCLE {cycle_count} ACROSS CURRENT {len(active_batch)} ACTIVE ACCOUNTS")
-            print("=" * 60)
+                print("\n" + "=" * 60)
+                print(f"   STARTING CYCLE {cycle_count} ACROSS CURRENT {len(active_batch)} ACTIVE ACCOUNTS")
+                print("=" * 60)
 
             account = active_batch[current_idx]
             email = account["email"]
@@ -484,6 +537,7 @@ def run_all_accounts():
                 record_video_size={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
+            
             page = context.new_page()
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             current_context = context
@@ -501,14 +555,22 @@ def run_all_accounts():
             if status == "LIMIT_REACHED":
                 print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
                 active_batch.pop(current_idx)
+
                 if remaining_pool:
                     new_acc = remaining_pool.pop(0)
                     print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
                     active_batch.insert(current_idx, new_acc)
                 else:
-                    pass  # Fixed the indentation error by adding a valid block statement
+                    print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
             else:
                 current_idx += 1
+
+        print("\n" + "=" * 60)
+        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS FINISHED ALL ASSIGNED ACCOUNTS!")
+        print("=" * 60)
+
+        browser.close()
+
 
 if __name__ == "__main__":
     run_all_accounts()
