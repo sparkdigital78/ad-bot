@@ -63,40 +63,30 @@ TARGET_BATCH_SIZE = 15
 def dismiss_all_modals_and_checkin(page):
     """
     Handles daily check-in (whether button is active or disabled)
-    and forcefully removes any modal overlay blocking the screen.
+    and forceful removal of blocking initial overlays.
     """
     try:
         page.wait_for_timeout(800)
-        
-        # 1. Check if Daily Check-In modal is present
         page.evaluate("""() => {
             const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"], [class*="overlay"]'));
             modals.forEach(m => {
                 if (m.textContent && m.textContent.includes('Daily check-in')) {
-                    // Look for Check In button inside modal
                     const checkInBtn = Array.from(m.querySelectorAll('button, div[role="button"], span')).find(
                         b => b.textContent && b.textContent.trim().toLowerCase() === 'check in'
                     );
                     if (checkInBtn && !checkInBtn.disabled) {
                         try { checkInBtn.click(); } catch(e) {}
                     }
-                    
-                    // Look for Close 'X' button
                     const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
                     if (closeBtn) {
                         try { closeBtn.click(); } catch(e) {}
                     }
-                    
-                    // Remove modal directly from DOM to clear screen
                     try { m.remove(); } catch(e) {}
                 }
             });
-
-            // Also clean backdrop / overlay shadows
             const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
             backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
         }""")
-
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)
     except Exception as e:
@@ -140,9 +130,7 @@ def force_unpause_videos(page):
                     v.play().catch(e => {});
                 });
             }
-
             playAllVideos(document);
-
             const iframes = document.querySelectorAll('iframe');
             iframes.forEach(f => {
                 try {
@@ -167,83 +155,54 @@ def check_daily_limit_reached(page):
 
 
 def click_close_button(page):
-    print("--> Waiting for 'Close' button to appear...")
+    print("--> Waiting for Ad 'Close' button to appear...")
 
-    for attempt in range(15):
+    for attempt in range(12):
         force_unpause_videos(page)
         page.wait_for_timeout(1000)
 
+        # 1. Target top-right close element directly via JS evaluate
+        closed = page.evaluate("""() => {
+            // Find yellow/orange close button or elements containing 'Close' text
+            const allElements = Array.from(document.querySelectorAll('*'));
+            for (let el of allElements) {
+                const text = (el.textContent || '').trim();
+                if (text === 'Close' || text === 'close' || text === '×') {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        el.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }""")
+
+        if closed:
+            print(f"--> [SUCCESS] Clicked 'Close' button on overlay (attempt {attempt + 1})!")
+            page.wait_for_timeout(1000)
+            return True
+
+        # 2. Try iframe frame locators
         for frame in page.frames:
-            close_selectors = [
-                "text=/^close$/i",
-                "text='Close'",
-                "text='close'",
-                "#dismiss-button",
-                "[aria-label*='close' i]",
-                "[aria-label*='dismiss' i]",
-                "button:has-text('Close')",
-                "div:has-text('Close')"
-            ]
-            for sel in close_selectors:
+            for sel in ["[aria-label*='close' i]", "text='Close'", "text='close'", "#dismiss-button", "button:has-text('Close')"]:
                 try:
                     loc = frame.locator(sel)
-                    if loc.count() > 0:
-                        for i in range(loc.count()):
-                            el = loc.nth(i)
-                            if el.is_visible():
-                                box = el.bounding_box()
-                                if box:
-                                    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                                else:
-                                    el.click(force=True)
-                                print(f"--> [SUCCESS] Frame locator '{sel}' clicked 'Close' (attempt {attempt + 1})!")
-                                page.wait_for_timeout(1000)
-                                return True
+                    if loc.count() > 0 and loc.first.is_visible():
+                        loc.first.click(force=True)
+                        print(f"--> [SUCCESS] Frame locator '{sel}' clicked 'Close'!")
+                        page.wait_for_timeout(1000)
+                        return True
                 except Exception:
                     pass
 
-        try:
-            closed = page.evaluate("""() => {
-                function clickCloseInDoc(doc) {
-                    const allEls = Array.from(doc.querySelectorAll('*'));
-                    for (let el of allEls) {
-                        const txt = (el.textContent || '').trim().toLowerCase();
-                        const id = (el.id || '').toLowerCase();
-                        if (txt === 'close' || txt === '×' || id.includes('dismiss')) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {
-                                el.click();
-                                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }
-
-                if (clickCloseInDoc(document)) return true;
-
-                const iframes = document.querySelectorAll('iframe');
-                for (let f of iframes) {
-                    try {
-                        if (f.contentDocument && clickCloseInDoc(f.contentDocument)) return true;
-                    } catch(e) {}
-                }
-                return false;
-            }""")
-            if closed:
-                print(f"--> [SUCCESS] JavaScript clicked 'Close' text (attempt {attempt + 1})!")
-                page.wait_for_timeout(1000)
-                return True
-        except Exception:
-            pass
-
-        if attempt >= 3:
-            coords = [(1515, 235), (1520, 240), (1500, 230), (1480, 240), (1540, 245)]
-            for cx, cy in coords:
+        # 3. Target top-right area fallback click (1515, 235) seen in video
+        if attempt >= 2:
+            top_right_coords = [(1515, 235), (1500, 235), (1520, 240)]
+            for cx, cy in top_right_coords:
                 try:
                     page.mouse.click(cx, cy)
-                    page.wait_for_timeout(200)
+                    page.wait_for_timeout(300)
                 except Exception:
                     pass
 
@@ -252,20 +211,17 @@ def click_close_button(page):
         except Exception:
             pass
 
-    print("--> [RECOVERY] Ad overlay did not respond. Refreshing page to clear modal...")
-    try:
-        page.goto("https://easemate.ai/earn-credits", wait_until="load")
-        page.wait_for_timeout(1000)
-        return True
-    except Exception:
-        pass
-
-    return False
+    # Force purge ad modal overlay if it stuck
+    print("--> [FORCE PURGE] Removing remaining ad modal overlays from DOM...")
+    page.evaluate("""() => {
+        const adModals = document.querySelectorAll('[class*="modal"], [class*="overlay"], [class*="dialog"]');
+        adModals.forEach(m => { try { m.remove(); } catch(e) {} });
+    }""")
+    return True
 
 
 def click_ok_button(page):
     page.wait_for_timeout(1000)
-    
     for _ in range(3):
         try:
             page.keyboard.press("Enter")
@@ -286,9 +242,7 @@ def click_ok_button(page):
                     }
                     return false;
                 }
-
                 if (findOK(document)) return true;
-
                 const iframes = document.querySelectorAll('iframe');
                 for (let f of iframes) {
                     try {
