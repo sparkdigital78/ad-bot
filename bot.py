@@ -7,7 +7,6 @@ from playwright.sync_api import sync_playwright
 
 current_context = None
 
-# Ensure video artifact directory exists from start
 os.makedirs("videos", exist_ok=True)
 
 
@@ -43,7 +42,6 @@ ALL_EMAILS = [e.strip().lower() for e in raw_emails.replace(",", " ").split() if
 shard_index = int(os.environ.get("SHARD_INDEX", "1"))
 total_shards = int(os.environ.get("TOTAL_SHARDS", "1"))
 
-# Distribute accounts evenly across shards
 SHARD_ASSIGNED_EMAILS = [
     email for idx, email in enumerate(ALL_EMAILS)
     if idx % total_shards == (shard_index - 1)
@@ -56,7 +54,6 @@ if not SHARD_ASSIGNED_EMAILS:
     print(f"--> [SHARD {shard_index}] No accounts assigned to this worker. Exiting cleanly...")
     sys.exit(0)
 
-# Stagger startup with randomized jitter
 startup_delay = (shard_index - 1) * random.randint(3, 8)
 if startup_delay > 0:
     print(f"--> [STAGGER] Shard {shard_index} sleeping for {startup_delay}s before starting...")
@@ -71,7 +68,7 @@ def human_delay(min_s=1.0, max_s=2.5):
 
 
 def purge_popups(page):
-    """Dismisses general overlays, promotional modals, and popups."""
+    """Dismisses and removes center modals, side promo cards, and floating overlays."""
     try:
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
@@ -86,7 +83,29 @@ def purge_popups(page):
                                 (d.textContent && d.textContent.includes('Sign in'));
                 if (!isLogin) {
                     const closeBtn = d.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
-                    if (closeBtn) closeBtn.click();
+                    if (closeBtn) {
+                        closeBtn.click();
+                    } else {
+                        d.remove();
+                    }
+                }
+            });
+
+            const floatingWidgets = Array.from(document.querySelectorAll('div, iframe, a')).filter(el => {
+                if (!el.textContent) return false;
+                const txt = el.textContent.toLowerCase();
+                return txt.includes('try it now') || txt.includes('put yourself into') || txt.includes('kling');
+            });
+
+            floatingWidgets.forEach(w => {
+                let parent = w;
+                for (let i = 0; i < 4; i++) {
+                    if (parent && parent.parentElement && parent.parentElement !== document.body) {
+                        parent = parent.parentElement;
+                    }
+                }
+                if (parent && parent !== document.body) {
+                    parent.remove();
                 }
             });
         }""")
@@ -137,36 +156,28 @@ def force_unpause_videos(page):
 
 
 def check_daily_limit_reached(page):
-    """Checks for the exact daily limit phrase."""
-    limit_phrases = [
-        "You have used all your ad watch opportunities for today",
-        "Please try again tomorrow",
-        "used all your ad watch"
-    ]
+    """Strict check for the exact daily limit toast message."""
+    exact_limit_text = "You have used all your ad watch opportunities for today"
     
-    for phrase in limit_phrases:
-        try:
-            element = page.get_by_text(phrase, exact=False)
-            if element.count() > 0 and element.first.is_visible():
-                return True
-        except Exception:
-            pass
+    try:
+        element = page.get_by_text(exact_limit_text, exact=False)
+        if element.count() > 0 and element.first.is_visible():
+            return True
+    except Exception:
+        pass
 
-        try:
-            for frame in page.frames:
-                frame_element = frame.get_by_text(phrase, exact=False)
-                if frame_element.count() > 0 and frame_element.first.is_visible():
-                    return True
-        except Exception:
-            pass
+    try:
+        for frame in page.frames:
+            frame_element = frame.get_by_text(exact_limit_text, exact=False)
+            if frame_element.count() > 0 and frame_element.first.is_visible():
+                return True
+    except Exception:
+        pass
 
     try:
         has_limit = page.evaluate("""() => {
-            const allNodes = Array.from(document.querySelectorAll('*'));
-            return allNodes.some(node => 
-                node.textContent && 
-                node.textContent.includes('You have used all your ad watch opportunities for today')
-            );
+            const toasts = Array.from(document.querySelectorAll('[class*="toast"], [class*="notification"], [class*="alert"], [role="status"]'));
+            return toasts.some(t => t.textContent && t.textContent.includes('You have used all your ad watch opportunities for today'));
         }""")
         if has_limit:
             return True
@@ -183,16 +194,18 @@ def click_close_button(page):
         force_unpause_videos(page)
         page.wait_for_timeout(1000)
 
+        # 1. Search across all page frames and sub-iframes for close elements
         for frame in page.frames:
             close_selectors = [
+                "#dismiss-button",
                 "text=/^close$/i",
                 "text='Close'",
                 "text='close'",
-                "#dismiss-button",
                 "[aria-label*='close' i]",
                 "[aria-label*='dismiss' i]",
                 "button:has-text('Close')",
-                "div:has-text('Close')"
+                "div:has-text('Close')",
+                "span:has-text('Close')"
             ]
             for sel in close_selectors:
                 try:
@@ -206,48 +219,39 @@ def click_close_button(page):
                                     page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
                                 else:
                                     el.click(force=True)
-                                print(f"--> [SUCCESS] Frame locator '{sel}' clicked 'Close' (attempt {attempt + 1})!")
+                                print(f"--> [SUCCESS] Clicked Close button via locator '{sel}' (attempt {attempt + 1})!")
                                 page.wait_for_timeout(1000)
                                 return True
                 except Exception:
                     pass
 
+        # 2. Target Google Ad overlay iframe container directly and click top-right corner
         try:
-            closed = page.evaluate("""() => {
-                function clickCloseInDoc(doc) {
-                    const allEls = Array.from(doc.querySelectorAll('*'));
-                    for (let el of allEls) {
-                        const txt = (el.textContent || '').trim().toLowerCase();
-                        const id = (el.id || '').toLowerCase();
-                        if (txt === 'close' || txt === '×' || id.includes('dismiss')) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {
-                                el.click();
-                                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                                return true;
-                            }
-                        }
+            google_iframe_closed = page.evaluate("""() => {
+                const adIframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
+                    const src = f.src || '';
+                    return src.includes('google') || src.includes('doubleclick') || f.id.includes('goog');
+                });
+
+                for (let f of adIframes) {
+                    const rect = f.getBoundingClientRect();
+                    if (rect.width > 200 && rect.height > 200) {
+                        // Return bounding box for top-right close button targeting
+                        return { x: rect.right - 25, y: rect.top + 25 };
                     }
-                    return false;
                 }
-
-                if (clickCloseInDoc(document)) return true;
-
-                const iframes = document.querySelectorAll('iframe');
-                for (let f of iframes) {
-                    try {
-                        if (f.contentDocument && clickCloseInDoc(f.contentDocument)) return true;
-                    } catch(e) {}
-                }
-                return false;
+                return null;
             }""")
-            if closed:
-                print(f"--> [SUCCESS] JavaScript clicked 'Close' text (attempt {attempt + 1})!")
-                page.wait_for_timeout(1000)
+
+            if google_iframe_closed:
+                page.mouse.click(google_iframe_closed["x"], google_iframe_closed["y"])
+                print(f"--> [SUCCESS] Clicked Google Ad top-right Close coordinates ({google_iframe_closed['x']}, {google_iframe_closed['y']})!")
+                page.wait_for_timeout(1500)
                 return True
         except Exception:
             pass
 
+        # 3. Fallback coordinate clicks near top-right ad player region
         if attempt >= 3:
             coords = [(1515, 235), (1520, 240), (1500, 230), (1480, 240), (1540, 245)]
             for cx, cy in coords:
@@ -262,7 +266,7 @@ def click_close_button(page):
         except Exception:
             pass
 
-    print("--> [RECOVERY] Ad overlay did not respond. Refreshing page to clear modal...")
+    print("--> [RECOVERY] Ad overlay did not respond. Reloading earn-credits page...")
     try:
         page.goto("https://easemate.ai/earn-credits", wait_until="load")
         page.wait_for_timeout(1000)
@@ -339,11 +343,8 @@ def click_ok_button(page):
 
 def click_watch_ad(page):
     try:
-        human_delay(1.5, 3.0)
-
-        for _ in range(3):
-            page.mouse.wheel(0, 200)
-            time.sleep(0.2)
+        purge_popups(page)
+        human_delay(1.0, 2.0)
 
         ad_title = page.get_by_text("Watch ad to earn credits", exact=False).first
         
@@ -353,7 +354,7 @@ def click_watch_ad(page):
             btn = card_container.locator("button, a, div").filter(has_text="Go Now").last
             
             if btn.is_visible():
-                btn.scroll_into_view_if_needed()
+                btn.scroll_into_view_if_needed(timeout=3000)
                 human_delay(0.5, 1.0)
                 btn.click(force=True)
                 print("--> [CLICK] Found and clicked 'Go Now' for Watch Ad!")
@@ -370,29 +371,29 @@ def click_watch_ad(page):
                     }
                     if (parent) {
                         const goBtn = Array.from(parent.querySelectorAll('*')).find(el => el.textContent && el.textContent.trim().toLowerCase() === 'go now');
-                        if (goBtn) goBtn.click();
+                        if (goBtn) {
+                            goBtn.scrollIntoView({ block: 'center', inline: 'center' });
+                            goBtn.click();
+                        }
                     }
                 }
             }""")
 
-        page.wait_for_timeout(3500)
+        page.wait_for_timeout(2500)
+
+        handle_daily_checkin_modal(page)
 
         if check_daily_limit_reached(page):
-            print("--> [LIMIT POPUP DETECTED] Popup appeared right after clicking 'Go Now'!")
+            print("--> [LIMIT POPUP DETECTED] Daily limit toast verified!")
             return "LIMIT_REACHED"
 
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(2000)
 
         has_ad = page.evaluate("""() => {
             const googleFullscreen = document.querySelector('[id*="goog"], [src*="googleads"], [id*="google_ads"], iframe[src*="doubleclick"]');
             const videoElement = document.querySelector('video');
-            const activeModal = document.querySelector('div[role="dialog"], [class*="modal-open"], [class*="overlay"]');
             
             if (videoElement || googleFullscreen) return true;
-            if (activeModal) {
-                const rect = activeModal.getBoundingClientRect();
-                if (rect.width > 250 && rect.height > 250) return true;
-            }
             return false;
         }""")
 
@@ -551,64 +552,4 @@ def run_all_accounts():
         while active_accounts:
             print("\n" + "=" * 70)
             print(f"[ROUND {round_number}] Active accounts remaining in shard: {len(active_accounts)}")
-            print("=" * 70)
-
-            accounts_to_remove = []
-
-            for account in active_accounts:
-                email = account["email"]
-                print("\n" + "-" * 50)
-                print(f"[SHARD {shard_index}/{total_shards}] Round {round_number} -> Account: {email}")
-                print("-" * 50)
-
-                v_width = random.choice([1920, 1536, 1440, 1366])
-                v_height = random.choice([1080, 864, 900, 768])
-
-                context = browser.new_context(
-                    viewport={"width": v_width, "height": v_height},
-                    record_video_dir="videos/",
-                    record_video_size={"width": 1920, "height": 1080},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                    locale="en-US",
-                    timezone_id="America/New_York"
-                )
-                
-                page = context.new_page()
-                
-                page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                    window.chrome = { runtime: {} };
-                """)
-                
-                current_context = context
-
-                try:
-                    status = watch_single_ad_for_account(page, account)
-                    
-                    if status == "LIMIT_REACHED":
-                        print(f"--> [DROPPED] Removing {email} permanently from future rounds.")
-                        accounts_to_remove.append(account)
-
-                except Exception as e:
-                    print(f"Error executing {email}: {e}")
-
-                context.close()
-                current_context = None
-
-            for acc in accounts_to_remove:
-                if acc in active_accounts:
-                    active_accounts.remove(acc)
-
-            round_number += 1
-
-        print("\n" + "=" * 70)
-        print(f"SUMMARY: ALL ACCOUNTS IN SHARD {shard_index}/{total_shards} HAVE COMPLETED THEIR DAILY LIMITS!")
-        print("=" * 70)
-
-        browser.close()
-
-
-if __name__ == "__main__":
-    run_all_accounts()
+            print(
