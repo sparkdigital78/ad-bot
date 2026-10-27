@@ -91,23 +91,19 @@ def handle_daily_checkin_modal(page):
     """Detects 'Daily Check-in' popups, clicks 'Check In', claims points, and closes the modal."""
     try:
         page.wait_for_timeout(1000)
-        # Check if daily check-in modal is visible
         checkin_modal = page.locator("div").filter(has_text="Daily check-in to earn advanced points").first
         if checkin_modal.count() > 0 and checkin_modal.is_visible():
             print("--> [CHECK-IN] Daily Check-in modal detected!")
             
-            # Click Check In button
             checkin_btn = page.locator("button:has-text('Check In'), div:has-text('Check In')").last
             if checkin_btn.is_visible():
                 print("--> [CHECK-IN] Clicking 'Check In' button...")
                 checkin_btn.click(force=True)
                 page.wait_for_timeout(1500)
 
-            # Close modal via Escape key or close button
             page.keyboard.press("Escape")
             page.wait_for_timeout(500)
 
-            # Force close modal container if still open
             page.evaluate("""() => {
                 const modal = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"]'))
                     .find(el => el.textContent && el.textContent.includes('Daily check-in'));
@@ -412,7 +408,6 @@ def process_single_account(page, account):
     page.get_by_role("button", name="Log in").last.click()
     page.wait_for_timeout(4000)
 
-    # Dismiss daily check-in popup after login
     handle_daily_checkin_modal(page)
 
     print(f"[{email}] Navigating to Earn Credits page...")
@@ -548,4 +543,9 @@ def run_all_accounts():
 
                 if remaining_pool:
                     new_acc = remaining_pool.pop(0)
-                    print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {cur
+                    print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
+                    active_batch.insert(current_idx, new_acc)
+                else:
+                    print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
+            else:
+                current_idx += 1
