@@ -77,24 +77,21 @@ def purge_popups(page):
 
     try:
         page.evaluate("""() => {
-            const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
+            // Target modals, dialogs, and popups
+            const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"], [class*="Dialog"]'));
             dialogs.forEach(d => {
-                const isLogin = d.querySelector('input[placeholder*="email" i], input[type="email"]') ||
-                                (d.textContent && d.textContent.includes('Sign in'));
-                if (!isLogin) {
-                    const closeBtn = d.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
-                    if (closeBtn) {
-                        closeBtn.click();
-                    } else {
-                        d.remove();
-                    }
+                const closeBtn = d.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
+                if (closeBtn) {
+                    try { closeBtn.click(); } catch(e) {}
                 }
+                try { d.remove(); } catch(e) {}
             });
 
+            // Target promo banners / Kling cards
             const floatingWidgets = Array.from(document.querySelectorAll('div, iframe, a')).filter(el => {
                 if (!el.textContent) return false;
                 const txt = el.textContent.toLowerCase();
-                return txt.includes('try it now') || txt.includes('put yourself into') || txt.includes('kling');
+                return txt.includes('kling') || txt.includes('try it now') || txt.includes('put yourself into');
             });
 
             floatingWidgets.forEach(w => {
@@ -105,7 +102,7 @@ def purge_popups(page):
                     }
                 }
                 if (parent && parent !== document.body) {
-                    parent.remove();
+                    try { parent.remove(); } catch(e) {}
                 }
             });
         }""")
@@ -409,11 +406,23 @@ def watch_single_ad_for_account(page, account):
     page.goto("https://easemate.ai/Dashboard", wait_until="networkidle")
     human_delay(1.0, 2.0)
 
+    # Dismiss any promo modal (e.g. Kling 4.0 modal) before attempting login
+    purge_popups(page)
     handle_daily_checkin_modal(page)
     human_delay(0.5, 1.0)
 
-    page.get_by_text("Log In", exact=True).first.click()
-    human_delay(1.0, 1.5)
+    # Attempt clicking 'Log In' with robust fallback
+    login_clicked = False
+    try:
+        login_btn = page.get_by_text("Log In", exact=True).first
+        login_btn.wait_for(timeout=5000)
+        login_btn.click(force=True)
+        login_clicked = True
+        human_delay(1.0, 1.5)
+    except Exception:
+        print(f"[{email}] 'Log In' button obscured or missing. Navigating directly to login page...")
+        page.goto("https://easemate.ai/login", wait_until="load")
+        human_delay(1.0, 1.5)
 
     try:
         email_option = page.get_by_text("Continue with Email", exact=True)
@@ -423,7 +432,7 @@ def watch_single_ad_for_account(page, account):
     except Exception:
         pass
 
-    page.wait_for_selector("input[placeholder='Enter your email address']")
+    page.wait_for_selector("input[placeholder='Enter your email address']", timeout=10000)
     page.type("input[placeholder='Enter your email address']", email, delay=random.randint(40, 90))
     human_delay(0.5, 1.0)
 
@@ -582,6 +591,9 @@ def run_all_accounts():
 
                 except Exception as e:
                     print(f"Error executing {email}: {e}")
+                    # Remove broken/unresponsive accounts to prevent infinite loops
+                    print(f"--> [ERROR FALLBACK] Removing {email} from rotation to avoid runner hang.")
+                    accounts_to_remove.append(account)
 
                 context.close()
                 current_context = None
