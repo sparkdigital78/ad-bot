@@ -140,8 +140,25 @@ def force_unpause_videos(page):
 
 
 def check_daily_limit_reached(page):
+    """Checks for limit message anywhere in DOM or active toast banners."""
     try:
-        limit_text = "You have used all your ad watch opportunities for today"
+        # Check via JS DOM scan across all visible elements and toast popups
+        has_limit_toast = page.evaluate("""() => {
+            const searchText = 'used all your ad watch opportunities';
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                const text = (el.textContent || '').toLowerCase();
+                if (text.includes(searchText)) {
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if has_limit_toast:
+            return True
+
+        # Fallback iframe check
+        limit_text = "used all your ad watch opportunities"
         for frame in page.frames:
             element = frame.get_by_text(limit_text, exact=False)
             if element.count() > 0 and element.first.is_visible():
@@ -158,11 +175,9 @@ def open_login_modal(page):
             purge_popups(page)
             dismiss_all_modals_and_checkin(page)
 
-            # Check if login input is already present
             if page.locator("input[placeholder='Enter your email address']").is_visible():
                 return True
 
-            # Trigger login popup via JS DOM search (avoids top-banner layout shift issues)
             page.evaluate("""() => {
                 const allElements = Array.from(document.querySelectorAll('button, a, div, span'));
                 const loginEl = allElements.find(el => {
@@ -174,7 +189,6 @@ def open_login_modal(page):
             
             page.wait_for_timeout(1500)
 
-            # Click 'Continue with Email' if option appears
             try:
                 email_btn = page.locator("text='Continue with Email'")
                 if email_btn.count() > 0 and email_btn.first.is_visible():
@@ -352,7 +366,12 @@ def click_watch_ad(page):
         if clicked:
             print("--> [CLICK] Watch Ad 'Go Now' clicked successfully via JavaScript!")
 
-        page.wait_for_timeout(3500)
+        # Check for limit toast notification immediately after clicking Go Now
+        page.wait_for_timeout(1500)
+        if check_daily_limit_reached(page):
+            return "LIMIT_REACHED"
+
+        page.wait_for_timeout(2000)
         dismiss_all_modals_and_checkin(page)
 
         has_ad = page.evaluate("""() => {
@@ -418,7 +437,11 @@ def process_single_account(page, account):
         purge_popups(page)
         page.wait_for_timeout(1000)
 
-        if click_watch_ad(page):
+        result = click_watch_ad(page)
+        if result == "LIMIT_REACHED":
+            print(f"[{email}] LIMIT DETECTED from toast: 'You have used all your ad watch opportunities for today.'")
+            return "LIMIT_REACHED"
+        elif result is True:
             ad_started = True
             break
         
