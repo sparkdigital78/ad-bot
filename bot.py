@@ -61,10 +61,7 @@ TARGET_BATCH_SIZE = 15
 
 
 def dismiss_all_modals_and_checkin(page):
-    """
-    Handles daily check-in (whether button is active or disabled)
-    and forceful removal of blocking initial overlays.
-    """
+    """Handles daily check-in and forcefully removes initial blocking overlays."""
     try:
         page.wait_for_timeout(800)
         page.evaluate("""() => {
@@ -154,6 +151,44 @@ def check_daily_limit_reached(page):
     return False
 
 
+def open_login_modal(page):
+    """Reliably opens the Login modal across various landing page states."""
+    for attempt in range(4):
+        try:
+            purge_popups(page)
+            dismiss_all_modals_and_checkin(page)
+
+            # Check if login modal is already visible
+            if page.locator("input[placeholder='Enter your email address']").is_visible():
+                return True
+
+            # Try primary click options
+            login_btn = page.locator("button:has-text('Log in'), a:has-text('Log in'), div:has-text('Log in')").first
+            if login_btn.is_visible():
+                login_btn.click(force=True)
+            else:
+                page.get_by_text("Log In", exact=True).first.click(force=True)
+
+            page.wait_for_timeout(1500)
+
+            # Click 'Continue with Email' if option appears
+            try:
+                email_option = page.get_by_text("Continue with Email", exact=True)
+                if email_option.is_visible():
+                    email_option.click(force=True)
+                    page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+            if page.locator("input[placeholder='Enter your email address']").is_visible():
+                return True
+        except Exception as e:
+            print(f"--> [LOGIN OPEN] Attempt {attempt + 1} retry: {e}")
+            page.wait_for_timeout(1000)
+
+    return False
+
+
 def click_close_button(page):
     print("--> Waiting for Ad 'Close' button to appear...")
 
@@ -161,9 +196,7 @@ def click_close_button(page):
         force_unpause_videos(page)
         page.wait_for_timeout(1000)
 
-        # 1. Target top-right close element directly via JS evaluate
         closed = page.evaluate("""() => {
-            // Find yellow/orange close button or elements containing 'Close' text
             const allElements = Array.from(document.querySelectorAll('*'));
             for (let el of allElements) {
                 const text = (el.textContent || '').trim();
@@ -183,7 +216,6 @@ def click_close_button(page):
             page.wait_for_timeout(1000)
             return True
 
-        # 2. Try iframe frame locators
         for frame in page.frames:
             for sel in ["[aria-label*='close' i]", "text='Close'", "text='close'", "#dismiss-button", "button:has-text('Close')"]:
                 try:
@@ -196,7 +228,6 @@ def click_close_button(page):
                 except Exception:
                     pass
 
-        # 3. Target top-right area fallback click (1515, 235) seen in video
         if attempt >= 2:
             top_right_coords = [(1515, 235), (1500, 235), (1520, 240)]
             for cx, cy in top_right_coords:
@@ -211,7 +242,6 @@ def click_close_button(page):
         except Exception:
             pass
 
-    # Force purge ad modal overlay if it stuck
     print("--> [FORCE PURGE] Removing remaining ad modal overlays from DOM...")
     page.evaluate("""() => {
         const adModals = document.querySelectorAll('[class*="modal"], [class*="overlay"], [class*="dialog"]');
@@ -287,7 +317,6 @@ def click_watch_ad(page):
         purge_popups(page)
         page.wait_for_timeout(1000)
 
-        # Scroll to 'Watch ad to earn credits' section
         page.evaluate("""() => {
             const el = Array.from(document.querySelectorAll('*')).find(
                 e => e.children.length === 0 && e.textContent.includes('Watch ad to earn credits')
@@ -296,7 +325,6 @@ def click_watch_ad(page):
         }""")
         page.wait_for_timeout(800)
 
-        # Click Go Now specifically for Watch Ad
         clicked = page.evaluate("""() => {
             const elements = Array.from(document.querySelectorAll('*'));
             const title = elements.find(el => el.children.length === 0 && el.textContent.includes('Watch ad to earn credits'));
@@ -355,21 +383,14 @@ def process_single_account(page, account):
     page.goto("https://easemate.ai/", wait_until="load")
     page.wait_for_timeout(1000)
 
-    purge_popups(page)
-    dismiss_all_modals_and_checkin(page)
+    if not open_login_modal(page):
+        print(f"[{email}] ERROR: Could not open login modal. Retrying direct navigation...")
+        page.goto("https://easemate.ai/earn-credits", wait_until="load")
+        page.wait_for_timeout(2000)
+        if not open_login_modal(page):
+            return "ERROR"
 
-    page.get_by_text("Log In", exact=True).first.click()
-    page.wait_for_timeout(1000)
-
-    try:
-        email_option = page.get_by_text("Continue with Email", exact=True)
-        if email_option.is_visible():
-            email_option.click()
-            page.wait_for_timeout(1000)
-    except Exception:
-        pass
-
-    page.wait_for_selector("input[placeholder='Enter your email address']")
+    page.wait_for_selector("input[placeholder='Enter your email address']", timeout=10000)
     page.fill("input[placeholder='Enter your email address']", email)
     page.wait_for_timeout(800)
 
