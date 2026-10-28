@@ -61,13 +61,15 @@ TARGET_BATCH_SIZE = 15
 
 
 def dismiss_all_modals_and_checkin(page):
-    """Handles daily check-in and forcefully removes initial blocking overlays."""
+    """Handles daily check-in and forcefully removes initial blocking overlays except login."""
     try:
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(500)
         page.evaluate("""() => {
             const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"], [class*="overlay"]'));
             modals.forEach(m => {
-                if (m.textContent && m.textContent.includes('Daily check-in')) {
+                const isLogin = m.querySelector('input[type="email"], input[placeholder*="email" i]') || 
+                                (m.textContent && m.textContent.includes('Sign in to EaseMate'));
+                if (!isLogin && m.textContent && m.textContent.includes('Daily check-in')) {
                     const checkInBtn = Array.from(m.querySelectorAll('button, div[role="button"], span')).find(
                         b => b.textContent && b.textContent.trim().toLowerCase() === 'check in'
                     );
@@ -82,22 +84,18 @@ def dismiss_all_modals_and_checkin(page):
                 }
             });
             const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
-            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
+            backdrops.forEach(b => { 
+                if (!document.querySelector('input[placeholder*="email" i]')) {
+                    try { b.remove(); } catch(e) {}
+                }
+            });
         }""")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(400)
     except Exception as e:
         print(f"--> [POPUP DISMISS] Notice: {e}")
 
 
 def purge_popups(page):
-    """Dismisses side banner overlays, promo cards, and unwanted popups."""
-    try:
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(200)
-    except Exception:
-        pass
-
+    """Dismisses side banner overlays and promo cards without touching login."""
     try:
         page.evaluate("""() => {
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
@@ -142,7 +140,6 @@ def force_unpause_videos(page):
 def check_daily_limit_reached(page):
     """Checks for limit message anywhere in DOM or active toast banners."""
     try:
-        # Check via JS DOM scan across all visible elements and toast popups
         has_limit_toast = page.evaluate("""() => {
             const searchText = 'used all your ad watch opportunities';
             const elements = Array.from(document.querySelectorAll('*'));
@@ -157,7 +154,6 @@ def check_daily_limit_reached(page):
         if has_limit_toast:
             return True
 
-        # Fallback iframe check
         limit_text = "used all your ad watch opportunities"
         for frame in page.frames:
             element = frame.get_by_text(limit_text, exact=False)
@@ -168,42 +164,101 @@ def check_daily_limit_reached(page):
     return False
 
 
-def open_login_modal(page):
-    """Robust login modal trigger using direct JS evaluate & selector fallbacks."""
-    for attempt in range(4):
-        try:
-            purge_popups(page)
-            dismiss_all_modals_and_checkin(page)
+def ensure_login_form_ready(page):
+    """Ensures email/password fields are open and visible on screen."""
+    email_input = page.locator("input[placeholder='Enter your email address']")
+    if email_input.is_visible():
+        return True
 
-            if page.locator("input[placeholder='Enter your email address']").is_visible():
+    try:
+        email_btn = page.locator("text='Continue with Email'")
+        if email_btn.count() > 0 and email_btn.first.is_visible():
+            email_btn.first.click(force=True)
+            page.wait_for_timeout(800)
+            if email_input.is_visible():
                 return True
+    except Exception:
+        pass
 
-            page.evaluate("""() => {
-                const allElements = Array.from(document.querySelectorAll('button, a, div, span'));
-                const loginEl = allElements.find(el => {
-                    const txt = (el.textContent || '').trim();
-                    return txt === 'Log in' || txt === 'Log In' || txt === 'Sign in' || txt === 'Sign In';
-                });
-                if (loginEl) loginEl.click();
-            }""")
-            
-            page.wait_for_timeout(1500)
+    page.evaluate("""() => {
+        const els = Array.from(document.querySelectorAll('button, a, div, span'));
+        const btn = els.find(e => {
+            const txt = (e.textContent || '').trim();
+            return txt === 'Log in' || txt === 'Log In' || txt === 'Sign in' || txt === 'Sign In';
+        });
+        if (btn) btn.click();
+    }""")
+    page.wait_for_timeout(1500)
 
-            try:
-                email_btn = page.locator("text='Continue with Email'")
-                if email_btn.count() > 0 and email_btn.first.is_visible():
-                    email_btn.first.click(force=True)
-                    page.wait_for_timeout(1000)
-            except Exception:
-                pass
+    try:
+        email_btn = page.locator("text='Continue with Email'")
+        if email_btn.count() > 0 and email_btn.first.is_visible():
+            email_btn.first.click(force=True)
+            page.wait_for_timeout(800)
+    except Exception:
+        pass
 
-            if page.locator("input[placeholder='Enter your email address']").is_visible():
-                return True
-        except Exception as e:
-            print(f"--> [LOGIN OPEN] Attempt {attempt + 1} retry: {e}")
-            page.wait_for_timeout(1000)
+    return email_input.is_visible()
 
-    return False
+
+def submit_login_form(page, email, password):
+    """Fills credentials, submits the login form, and forces the login modal to close."""
+    email_selector = "input[placeholder='Enter your email address']"
+    password_selector = "input[placeholder='Enter your Password']"
+
+    page.wait_for_selector(email_selector, timeout=8000)
+    page.fill(email_selector, email)
+    page.wait_for_timeout(500)
+
+    page.fill(password_selector, password)
+    page.wait_for_timeout(500)
+
+    submitted = page.evaluate("""() => {
+        const inputs = Array.from(document.querySelectorAll('input'));
+        const passInput = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.includes('Password')));
+        if (!passInput) return false;
+
+        let form = passInput.closest('form');
+        if (!form) form = passInput.closest('div[role="dialog"], [class*="modal"]');
+        if (!form) return false;
+
+        const loginBtn = Array.from(form.querySelectorAll('button, div[role="button"], input[type="submit"]')).find(b => {
+            const txt = (b.textContent || '').trim().toLowerCase();
+            return txt === 'log in' || txt === 'login' || txt === 'sign in';
+        });
+
+        if (loginBtn) {
+            loginBtn.click();
+            return true;
+        }
+        return false;
+    }""")
+
+    if not submitted:
+        page.get_by_role("button", name="Log in").last.click(force=True)
+
+    page.wait_for_timeout(3000)
+
+    # Force close or purge the login modal if it didn't auto-close after success
+    try:
+        page.evaluate("""() => {
+            const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
+            modals.forEach(m => {
+                if (m.querySelector('input[type="password"]') || (m.textContent && m.textContent.includes('Sign in to EaseMate'))) {
+                    const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
+                    if (closeBtn) {
+                        try { closeBtn.click(); } catch(e) {}
+                    }
+                    try { m.remove(); } catch(e) {}
+                }
+            });
+            const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
+            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
+        }""")
+    except Exception:
+        pass
+
+    page.wait_for_timeout(1000)
 
 
 def click_close_button(page):
@@ -366,7 +421,6 @@ def click_watch_ad(page):
         if clicked:
             print("--> [CLICK] Watch Ad 'Go Now' clicked successfully via JavaScript!")
 
-        # Check for limit toast notification immediately after clicking Go Now
         page.wait_for_timeout(1500)
         if check_daily_limit_reached(page):
             return "LIMIT_REACHED"
@@ -405,19 +459,11 @@ def process_single_account(page, account):
     page.goto("https://easemate.ai/earn-credits", wait_until="load")
     page.wait_for_timeout(1500)
 
-    if not open_login_modal(page):
-        print(f"[{email}] ERROR: Could not open login modal.")
+    if not ensure_login_form_ready(page):
+        print(f"[{email}] ERROR: Login inputs not accessible. Skipping account...")
         return "ERROR"
 
-    page.wait_for_selector("input[placeholder='Enter your email address']", timeout=10000)
-    page.fill("input[placeholder='Enter your email address']", email)
-    page.wait_for_timeout(800)
-
-    page.fill("input[placeholder='Enter your Password']", password)
-    page.wait_for_timeout(800)
-
-    page.get_by_role("button", name="Log in").last.click()
-    page.wait_for_timeout(4000)
+    submit_login_form(page, email, password)
 
     dismiss_all_modals_and_checkin(page)
     purge_popups(page)
@@ -495,74 +541,4 @@ def run_all_accounts():
             headless=False,
             args=[
                 "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--window-size=1920,1080",
-                "--autoplay-policy=no-user-gesture-required"
-            ]
-        )
-
-        while active_batch:
-            if current_idx >= len(active_batch):
-                current_idx = 0
-                cycle_count += 1
-                print("\n" + "=" * 60)
-                print(f"   STARTING CYCLE {cycle_count} ACROSS CURRENT {len(active_batch)} ACTIVE ACCOUNTS")
-                print("=" * 60)
-
-            account = active_batch[current_idx]
-            email = account["email"]
-
-            print("\n" + "-" * 50)
-            print(f" [PROGRESS STATUS - SHARD {shard_index}/{total_shards}]")
-            print(f"  • Assigned To This Runner:   {total_assigned}")
-            print(f"  • Currently Active Batch:    {len(active_batch)}")
-            print(f"  • Waiting in Queue:          {len(remaining_pool)}")
-            print("-" * 50)
-            print(f"[Cycle {cycle_count} | Slot {current_idx + 1}/{len(active_batch)}] Account: {email}")
-
-            context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                record_video_dir="videos/",
-                record_video_size={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-            
-            page = context.new_page()
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            current_context = context
-
-            try:
-                status = process_single_account(page, account)
-            except Exception as e:
-                print(f"Error executing {email}: {e}")
-                status = "ERROR"
-            finally:
-                if current_context:
-                    current_context.close()
-                    current_context = None
-
-            if status == "LIMIT_REACHED":
-                print(f"--> [REMOVING ACCOUNT] {email} reached limit. Dropping from active batch.")
-                active_batch.pop(current_idx)
-
-                if remaining_pool:
-                    new_acc = remaining_pool.pop(0)
-                    print(f"--> [ADDING NEW ACCOUNT] Pulled {new_acc['email']} into slot {current_idx + 1}.")
-                    active_batch.insert(current_idx, new_acc)
-                else:
-                    print(f"--> Pool empty. Active batch size reduced to {len(active_batch)}.")
-            else:
-                current_idx += 1
-
-        print("\n" + "=" * 60)
-        print(f"SUMMARY: SHARD {shard_index}/{total_shards} HAS FINISHED ALL ASSIGNED ACCOUNTS!")
-        print("=" * 60)
-
-        browser.close()
-
-
-if __name__ == "__main__":
-    run_all_accounts()
+                "--disable-setu
