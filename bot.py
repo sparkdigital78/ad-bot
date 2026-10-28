@@ -61,15 +61,13 @@ TARGET_BATCH_SIZE = 15
 
 
 def dismiss_all_modals_and_checkin(page):
-    """Handles daily check-in and forcefully removes initial blocking overlays except active login."""
+    """Handles daily check-in and forcefully removes initial blocking overlays."""
     try:
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(800)
         page.evaluate("""() => {
             const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"], [class*="overlay"]'));
             modals.forEach(m => {
-                const isLogin = m.querySelector('input[type="email"], input[placeholder*="email" i]') || 
-                                (m.textContent && m.textContent.includes('Sign in to EaseMate'));
-                if (!isLogin && m.textContent && m.textContent.includes('Daily check-in')) {
+                if (m.textContent && m.textContent.includes('Daily check-in')) {
                     const checkInBtn = Array.from(m.querySelectorAll('button, div[role="button"], span')).find(
                         b => b.textContent && b.textContent.trim().toLowerCase() === 'check in'
                     );
@@ -84,41 +82,22 @@ def dismiss_all_modals_and_checkin(page):
                 }
             });
             const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
-            backdrops.forEach(b => { 
-                if (!document.querySelector('input[placeholder*="email" i]')) {
-                    try { b.remove(); } catch(e) {}
-                }
-            });
+            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
         }""")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
     except Exception as e:
         print(f"--> [POPUP DISMISS] Notice: {e}")
 
 
-def force_close_login_modal(page):
-    """Forcefully closes or removes the login modal if it stays open after successful submit."""
+def purge_popups(page):
+    """Dismisses side banner overlays, promo cards, and unwanted popups."""
     try:
-        page.evaluate("""() => {
-            const loginModals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]')).filter(
-                m => m.querySelector('input[placeholder*="email" i], input[type="email"]') || (m.textContent && m.textContent.includes('Sign in'))
-            );
-            loginModals.forEach(m => {
-                const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
-                if (closeBtn) {
-                    try { closeBtn.click(); } catch(e) {}
-                }
-                try { m.remove(); } catch(e) {}
-            });
-            const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
-            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
-        }""")
         page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(200)
     except Exception:
         pass
 
-
-def purge_popups(page):
-    """Dismisses side banner overlays and promo cards without touching active login."""
     try:
         page.evaluate("""() => {
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
@@ -163,6 +142,7 @@ def force_unpause_videos(page):
 def check_daily_limit_reached(page):
     """Checks for limit message anywhere in DOM or active toast banners."""
     try:
+        # Check via JS DOM scan across all visible elements and toast popups
         has_limit_toast = page.evaluate("""() => {
             const searchText = 'used all your ad watch opportunities';
             const elements = Array.from(document.querySelectorAll('*'));
@@ -177,6 +157,7 @@ def check_daily_limit_reached(page):
         if has_limit_toast:
             return True
 
+        # Fallback iframe check
         limit_text = "used all your ad watch opportunities"
         for frame in page.frames:
             element = frame.get_by_text(limit_text, exact=False)
@@ -187,98 +168,42 @@ def check_daily_limit_reached(page):
     return False
 
 
-def ensure_login_form_ready(page):
-    """Waits for full page hydration and opens the login inputs reliably."""
-    for attempt in range(5):
+def open_login_modal(page):
+    """Robust login modal trigger using direct JS evaluate & selector fallbacks."""
+    for attempt in range(4):
         try:
-            email_input = page.locator("input[placeholder='Enter your email address']")
-            if email_input.is_visible():
+            purge_popups(page)
+            dismiss_all_modals_and_checkin(page)
+
+            if page.locator("input[placeholder='Enter your email address']").is_visible():
                 return True
 
-            # Handle 'Continue with Email' step
-            email_btn = page.locator("text='Continue with Email'")
-            if email_btn.count() > 0 and email_btn.first.is_visible():
-                email_btn.first.click(force=True)
-                page.wait_for_timeout(1000)
-                if email_input.is_visible():
-                    return True
-
-            # Trigger login popup via JS DOM search
             page.evaluate("""() => {
-                const els = Array.from(document.querySelectorAll('button, a, div, span'));
-                const btn = els.find(e => {
-                    const txt = (e.textContent || '').trim();
+                const allElements = Array.from(document.querySelectorAll('button, a, div, span'));
+                const loginEl = allElements.find(el => {
+                    const txt = (el.textContent || '').trim();
                     return txt === 'Log in' || txt === 'Log In' || txt === 'Sign in' || txt === 'Sign In';
                 });
-                if (btn) btn.click();
+                if (loginEl) loginEl.click();
             }""")
-            page.wait_for_timeout(2000)
+            
+            page.wait_for_timeout(1500)
 
-            email_btn = page.locator("text='Continue with Email'")
-            if email_btn.count() > 0 and email_btn.first.is_visible():
-                email_btn.first.click(force=True)
-                page.wait_for_timeout(1000)
+            try:
+                email_btn = page.locator("text='Continue with Email'")
+                if email_btn.count() > 0 and email_btn.first.is_visible():
+                    email_btn.first.click(force=True)
+                    page.wait_for_timeout(1000)
+            except Exception:
+                pass
 
-            if email_input.is_visible():
+            if page.locator("input[placeholder='Enter your email address']").is_visible():
                 return True
         except Exception as e:
-            print(f"--> [LOGIN WAITING] Retry {attempt + 1}/5: {e}")
-
-        # Retry reload if page is stuck loading
-        page.goto("https://easemate.ai/earn-credits", wait_until="networkidle", timeout=15000)
-        page.wait_for_timeout(2000)
+            print(f"--> [LOGIN OPEN] Attempt {attempt + 1} retry: {e}")
+            page.wait_for_timeout(1000)
 
     return False
-
-
-def submit_login_form(page, email, password):
-    """Fills credentials, triggers input events, submits form, and ensures modal closes."""
-    email_selector = "input[placeholder='Enter your email address']"
-    password_selector = "input[placeholder='Enter your Password']"
-
-    page.wait_for_selector(email_selector, timeout=12000)
-    
-    # Fill with native events to ensure web framework reacts
-    page.locator(email_selector).fill(email)
-    page.locator(email_selector).dispatchEvent("input")
-    page.locator(email_selector).dispatchEvent("change")
-    page.wait_for_timeout(400)
-
-    page.locator(password_selector).fill(password)
-    page.locator(password_selector).dispatchEvent("input")
-    page.locator(password_selector).dispatchEvent("change")
-    page.wait_for_timeout(400)
-
-    # Click login button
-    submitted = page.evaluate("""() => {
-        const inputs = Array.from(document.querySelectorAll('input'));
-        const passInput = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.includes('Password')));
-        if (!passInput) return false;
-
-        let container = passInput.closest('form') || passInput.closest('div[role="dialog"], [class*="modal"]');
-        if (!container) return false;
-
-        const loginBtn = Array.from(container.querySelectorAll('button, div[role="button"], input[type="submit"]')).find(b => {
-            const txt = (b.textContent || '').trim().toLowerCase();
-            return txt === 'log in' || txt === 'login' || txt === 'sign in';
-        });
-
-        if (loginBtn) {
-            loginBtn.click();
-            return true;
-        }
-        return false;
-    }""")
-
-    if not submitted:
-        page.get_by_role("button", name="Log in").last.click(force=True)
-
-    page.wait_for_timeout(3500)
-
-    # Check if login modal is still hanging on screen after submitting and clear it
-    if page.locator(email_selector).is_visible():
-        print("--> [LOGIN STUCK] Modal remained on screen after submit. Force closing login modal...")
-        force_close_login_modal(page)
 
 
 def click_close_button(page):
@@ -441,6 +366,7 @@ def click_watch_ad(page):
         if clicked:
             print("--> [CLICK] Watch Ad 'Go Now' clicked successfully via JavaScript!")
 
+        # Check for limit toast notification immediately after clicking Go Now
         page.wait_for_timeout(1500)
         if check_daily_limit_reached(page):
             return "LIMIT_REACHED"
@@ -476,14 +402,22 @@ def process_single_account(page, account):
     password = account["password"]
 
     print(f"--- Logging into: {email} ---")
-    page.goto("https://easemate.ai/earn-credits", wait_until="networkidle", timeout=20000)
-    page.wait_for_timeout(2000)
+    page.goto("https://easemate.ai/earn-credits", wait_until="load")
+    page.wait_for_timeout(1500)
 
-    if not ensure_login_form_ready(page):
-        print(f"[{email}] ERROR: Login inputs not accessible. Skipping account...")
+    if not open_login_modal(page):
+        print(f"[{email}] ERROR: Could not open login modal.")
         return "ERROR"
 
-    submit_login_form(page, email, password)
+    page.wait_for_selector("input[placeholder='Enter your email address']", timeout=10000)
+    page.fill("input[placeholder='Enter your email address']", email)
+    page.wait_for_timeout(800)
+
+    page.fill("input[placeholder='Enter your Password']", password)
+    page.wait_for_timeout(800)
+
+    page.get_by_role("button", name="Log in").last.click()
+    page.wait_for_timeout(4000)
 
     dismiss_all_modals_and_checkin(page)
     purge_popups(page)
