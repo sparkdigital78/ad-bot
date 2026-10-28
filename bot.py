@@ -61,7 +61,7 @@ TARGET_BATCH_SIZE = 15
 
 
 def dismiss_all_modals_and_checkin(page):
-    """Handles daily check-in and forcefully removes initial blocking overlays except login."""
+    """Handles daily check-in and forcefully removes initial blocking overlays except active login."""
     try:
         page.wait_for_timeout(500)
         page.evaluate("""() => {
@@ -94,8 +94,31 @@ def dismiss_all_modals_and_checkin(page):
         print(f"--> [POPUP DISMISS] Notice: {e}")
 
 
+def force_close_login_modal(page):
+    """Forcefully closes or removes the login modal if it stays open after successful submit."""
+    try:
+        page.evaluate("""() => {
+            const loginModals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]')).filter(
+                m => m.querySelector('input[placeholder*="email" i], input[type="email"]') || (m.textContent && m.textContent.includes('Sign in'))
+            );
+            loginModals.forEach(m => {
+                const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
+                if (closeBtn) {
+                    try { closeBtn.click(); } catch(e) {}
+                }
+                try { m.remove(); } catch(e) {}
+            });
+            const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
+            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
+        }""")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
 def purge_popups(page):
-    """Dismisses side banner overlays and promo cards without touching login."""
+    """Dismisses side banner overlays and promo cards without touching active login."""
     try:
         page.evaluate("""() => {
             const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
@@ -202,27 +225,33 @@ def ensure_login_form_ready(page):
 
 
 def submit_login_form(page, email, password):
-    """Fills credentials, submits the login form, and forces the login modal to close."""
+    """Fills credentials, triggers input events, submits form, and ensures modal closes."""
     email_selector = "input[placeholder='Enter your email address']"
     password_selector = "input[placeholder='Enter your Password']"
 
     page.wait_for_selector(email_selector, timeout=8000)
-    page.fill(email_selector, email)
-    page.wait_for_timeout(500)
+    
+    # Fill with native events to ensure web framework reacts
+    page.locator(email_selector).fill(email)
+    page.locator(email_selector).dispatchEvent("input")
+    page.locator(email_selector).dispatchEvent("change")
+    page.wait_for_timeout(400)
 
-    page.fill(password_selector, password)
-    page.wait_for_timeout(500)
+    page.locator(password_selector).fill(password)
+    page.locator(password_selector).dispatchEvent("input")
+    page.locator(password_selector).dispatchEvent("change")
+    page.wait_for_timeout(400)
 
+    # Click login button
     submitted = page.evaluate("""() => {
         const inputs = Array.from(document.querySelectorAll('input'));
         const passInput = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.includes('Password')));
         if (!passInput) return false;
 
-        let form = passInput.closest('form');
-        if (!form) form = passInput.closest('div[role="dialog"], [class*="modal"]');
-        if (!form) return false;
+        let container = passInput.closest('form') || passInput.closest('div[role="dialog"], [class*="modal"]');
+        if (!container) return false;
 
-        const loginBtn = Array.from(form.querySelectorAll('button, div[role="button"], input[type="submit"]')).find(b => {
+        const loginBtn = Array.from(container.querySelectorAll('button, div[role="button"], input[type="submit"]')).find(b => {
             const txt = (b.textContent || '').trim().toLowerCase();
             return txt === 'log in' || txt === 'login' || txt === 'sign in';
         });
@@ -237,28 +266,12 @@ def submit_login_form(page, email, password):
     if not submitted:
         page.get_by_role("button", name="Log in").last.click(force=True)
 
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(3500)
 
-    # Force close or purge the login modal if it didn't auto-close after success
-    try:
-        page.evaluate("""() => {
-            const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
-            modals.forEach(m => {
-                if (m.querySelector('input[type="password"]') || (m.textContent && m.textContent.includes('Sign in to EaseMate'))) {
-                    const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
-                    if (closeBtn) {
-                        try { closeBtn.click(); } catch(e) {}
-                    }
-                    try { m.remove(); } catch(e) {}
-                }
-            });
-            const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
-            backdrops.forEach(b => { try { b.remove(); } catch(e) {} });
-        }""")
-    except Exception:
-        pass
-
-    page.wait_for_timeout(1000)
+    # Check if login modal is still hanging on screen after submitting and clear it
+    if page.locator(email_selector).is_visible():
+        print("--> [LOGIN STUCK] Modal remained on screen after submit. Force closing login modal...")
+        force_close_login_modal(page)
 
 
 def click_close_button(page):
