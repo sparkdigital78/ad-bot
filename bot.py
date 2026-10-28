@@ -188,40 +188,47 @@ def check_daily_limit_reached(page):
 
 
 def ensure_login_form_ready(page):
-    """Ensures email/password fields are open and visible on screen."""
-    email_input = page.locator("input[placeholder='Enter your email address']")
-    if email_input.is_visible():
-        return True
-
-    try:
-        email_btn = page.locator("text='Continue with Email'")
-        if email_btn.count() > 0 and email_btn.first.is_visible():
-            email_btn.first.click(force=True)
-            page.wait_for_timeout(800)
+    """Waits for full page hydration and opens the login inputs reliably."""
+    for attempt in range(5):
+        try:
+            email_input = page.locator("input[placeholder='Enter your email address']")
             if email_input.is_visible():
                 return True
-    except Exception:
-        pass
 
-    page.evaluate("""() => {
-        const els = Array.from(document.querySelectorAll('button, a, div, span'));
-        const btn = els.find(e => {
-            const txt = (e.textContent || '').trim();
-            return txt === 'Log in' || txt === 'Log In' || txt === 'Sign in' || txt === 'Sign In';
-        });
-        if (btn) btn.click();
-    }""")
-    page.wait_for_timeout(1500)
+            # Handle 'Continue with Email' step
+            email_btn = page.locator("text='Continue with Email'")
+            if email_btn.count() > 0 and email_btn.first.is_visible():
+                email_btn.first.click(force=True)
+                page.wait_for_timeout(1000)
+                if email_input.is_visible():
+                    return True
 
-    try:
-        email_btn = page.locator("text='Continue with Email'")
-        if email_btn.count() > 0 and email_btn.first.is_visible():
-            email_btn.first.click(force=True)
-            page.wait_for_timeout(800)
-    except Exception:
-        pass
+            # Trigger login popup via JS DOM search
+            page.evaluate("""() => {
+                const els = Array.from(document.querySelectorAll('button, a, div, span'));
+                const btn = els.find(e => {
+                    const txt = (e.textContent || '').trim();
+                    return txt === 'Log in' || txt === 'Log In' || txt === 'Sign in' || txt === 'Sign In';
+                });
+                if (btn) btn.click();
+            }""")
+            page.wait_for_timeout(2000)
 
-    return email_input.is_visible()
+            email_btn = page.locator("text='Continue with Email'")
+            if email_btn.count() > 0 and email_btn.first.is_visible():
+                email_btn.first.click(force=True)
+                page.wait_for_timeout(1000)
+
+            if email_input.is_visible():
+                return True
+        except Exception as e:
+            print(f"--> [LOGIN WAITING] Retry {attempt + 1}/5: {e}")
+
+        # Retry reload if page is stuck loading
+        page.goto("https://easemate.ai/earn-credits", wait_until="networkidle", timeout=15000)
+        page.wait_for_timeout(2000)
+
+    return False
 
 
 def submit_login_form(page, email, password):
@@ -229,7 +236,7 @@ def submit_login_form(page, email, password):
     email_selector = "input[placeholder='Enter your email address']"
     password_selector = "input[placeholder='Enter your Password']"
 
-    page.wait_for_selector(email_selector, timeout=8000)
+    page.wait_for_selector(email_selector, timeout=12000)
     
     # Fill with native events to ensure web framework reacts
     page.locator(email_selector).fill(email)
@@ -469,8 +476,8 @@ def process_single_account(page, account):
     password = account["password"]
 
     print(f"--- Logging into: {email} ---")
-    page.goto("https://easemate.ai/earn-credits", wait_until="load")
-    page.wait_for_timeout(1500)
+    page.goto("https://easemate.ai/earn-credits", wait_until="networkidle", timeout=20000)
+    page.wait_for_timeout(2000)
 
     if not ensure_login_form_ready(page):
         print(f"[{email}] ERROR: Login inputs not accessible. Skipping account...")
