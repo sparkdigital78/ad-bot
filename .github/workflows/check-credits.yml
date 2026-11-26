@@ -1,15 +1,14 @@
 name: Check Advanced Credits
 
 on:
-  workflow_dispatch: # Lets you click "Run workflow" manually anytime
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   check-credits:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1] # Change to match your existing shard count (e.g. [1] if single shard)
 
     steps:
       - name: Checkout Repository
@@ -27,21 +26,18 @@ jobs:
           pip install playwright
           playwright install chromium
 
-      - name: Run Advanced Credits Check (Shard ${{ matrix.shard }}/8)
+      - name: Run Advanced Credits Check (All Accounts)
         env:
           ALL_EMAILS: ${{ secrets.ALL_EMAILS }}
           ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
-          SHARD_INDEX: ${{ matrix.shard }}
-          TOTAL_SHARDS: 8 # Match the total number of shards above
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python -u check_credits.py
 
-      - name: Upload Credit Reports & Videos
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: advanced-credits-shard-${{ matrix.shard }}
-          path: |
-            reports/
-            videos/
-            
+      - name: Save Updated Credit Report to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add advanced_credits_report.txt
+          git commit -m "Update advanced_credits_report.txt with latest run results" || exit 0
+          git push
+          
