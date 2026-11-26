@@ -1,0 +1,47 @@
+name: Check Advanced Credits
+
+on:
+  workflow_dispatch: # Lets you click "Run workflow" manually anytime
+
+jobs:
+  check-credits:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8] # Change to match your existing shard count (e.g. [1] if single shard)
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies & Virtual Display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install playwright
+          playwright install chromium
+
+      - name: Run Advanced Credits Check (Shard ${{ matrix.shard }}/8)
+        env:
+          ALL_EMAILS: ${{ secrets.ALL_EMAILS }}
+          ACCOUNT_PASSWORD: ${{ secrets.ACCOUNT_PASSWORD }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          TOTAL_SHARDS: 8 # Match the total number of shards above
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python -u check_credits.py
+
+      - name: Upload Credit Reports & Videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: advanced-credits-shard-${{ matrix.shard }}
+          path: |
+            reports/
+            videos/
+            
