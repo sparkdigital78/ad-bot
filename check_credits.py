@@ -96,9 +96,15 @@ def dismiss_overlays(page, keep_login=True):
 
                 const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
                 if (closeBtn) {
-                    try { closeBtn.click(); } catch(e) {}
+                    closeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                 }
                 try { m.remove(); } catch(e) {}
+            });
+            const backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="modal-backdrop"]');
+            backdrops.forEach(b => {
+                if (!keepLogin || !document.querySelector('input[placeholder*="email" i]')) {
+                    try { b.remove(); } catch(e) {}
+                }
             });
         }""", keep_login)
     except Exception:
@@ -125,7 +131,7 @@ def login_account(page, email, password):
                 const txt = (e.textContent || '').trim();
                 return txt === 'Log In' || txt === 'Log in' || txt === 'Sign In' || txt === 'Sign in';
             });
-            if (btn) btn.click();
+            if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         }""")
         page.wait_for_timeout(1500)
 
@@ -137,7 +143,7 @@ def login_account(page, email, password):
     if not page.locator(email_selector).is_visible():
         return False, "LOGIN_MODAL_FAILED"
 
-    # Step 2: Fill Email & Password with native input events
+    # Step 2: Fill Email & Password
     page.locator(email_selector).fill(email)
     page.locator(email_selector).dispatch_event("input")
     page.locator(email_selector).dispatch_event("change")
@@ -158,7 +164,7 @@ def login_account(page, email, password):
             b => (b.textContent || '').trim().toLowerCase() === 'log in'
         );
         if (btn) {
-            btn.click();
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             return true;
         }
         return false;
@@ -169,7 +175,6 @@ def login_account(page, email, password):
 
     page.wait_for_timeout(4000)
 
-    # Check for wrong password / error toast
     has_auth_error = page.evaluate("""() => {
         const txt = document.body.innerText.toLowerCase();
         return txt.includes('incorrect password') || txt.includes('account does not exist') || txt.includes('invalid email');
@@ -177,7 +182,6 @@ def login_account(page, email, password):
     if has_auth_error:
         return False, "INVALID_CREDENTIALS"
 
-    # Force close login modal if it lingered after login
     if page.locator(email_selector).is_visible():
         dismiss_overlays(page, keep_login=False)
         page.keyboard.press("Escape")
@@ -186,41 +190,53 @@ def login_account(page, email, password):
     return True, "OK"
 
 
-def extract_advanced_credits(page):
-    """Clicks the top-right profile avatar next to Dashboard and extracts only Advanced Credits."""
+def extract_advanced_credits(page, email):
+    """Clicks the top-right profile avatar next to Dashboard and extracts Advanced Credits."""
     dismiss_overlays(page, keep_login=False)
     page.wait_for_timeout(1000)
 
-    avatar_clicked = page.evaluate("""() => {
+    # Find the exact bounding box of the circular avatar icon to the right of 'Dashboard'
+    avatar_coords = page.evaluate("""() => {
         const dashBtn = Array.from(document.querySelectorAll('a, button, div, span')).find(
-            el => (el.textContent || '').trim() === 'Dashboard' && el.offsetWidth > 0
+            el => (el.textContent || '').trim() === 'Dashboard' && el.getBoundingClientRect().width > 0
         );
-        if (dashBtn && dashBtn.parentElement) {
-            const siblings = Array.from(dashBtn.parentElement.children);
-            const dashIdx = siblings.indexOf(dashBtn);
-            for (let i = dashIdx + 1; i < siblings.length; i++) {
-                if (siblings[i].offsetWidth > 0) {
-                    siblings[i].click();
-                    return true;
-                }
-            }
-            const grandParent = dashBtn.parentElement.parentElement;
-            if (grandParent) {
-                const avatar = grandParent.querySelector('img[alt*="avatar" i], [class*="avatar"], svg');
-                if (avatar) {
-                    avatar.click();
-                    return true;
-                }
-            }
+        if (!dashBtn) return null;
+
+        const dashRect = dashBtn.getBoundingClientRect();
+        // Look for any visible element in the top header bar strictly to the right of 'Dashboard'
+        const allEls = Array.from(document.querySelectorAll('header *, nav *, div, button, img, span'));
+        const candidates = allEls.filter(el => {
+            const r = el.getBoundingClientRect();
+            return r.width >= 24 && r.width <= 60 &&
+                   r.height >= 24 && r.height <= 60 &&
+                   r.left > dashRect.right &&
+                   Math.abs(r.top - dashRect.top) < 25;
+        });
+
+        if (candidates.length > 0) {
+            // Pick the rightmost circular avatar icon
+            candidates.sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+            const target = candidates[0].getBoundingClientRect();
+            return { x: target.left + target.width / 2, y: target.top + target.height / 2 };
         }
-        return false;
+        return null;
     }""")
 
-    if not avatar_clicked:
-        page.mouse.click(1885, 65)
+    if avatar_coords:
+        page.mouse.click(avatar_coords["x"], avatar_coords["y"])
+    else:
+        # Fallback: click right next to Dashboard button based on 1920x1080 layout
+        dash_loc = page.get_by_text("Dashboard", exact=True).first
+        if dash_loc.is_visible():
+            box = dash_loc.bounding_box()
+            if box:
+                page.mouse.click(box["x"] + box["width"] + 28, box["y"] + box["height"] / 2)
+        else:
+            page.mouse.click(1882, 72)
 
     page.wait_for_timeout(2000)
 
+    # Read Advanced Credits from the profile dropdown card
     credit_data = page.evaluate("""() => {
         const result = { advanced: null, found: false };
         const allElements = Array.from(document.querySelectorAll('div, span, p'));
@@ -290,7 +306,7 @@ def run_credit_check():
                     results_summary.append((email, reason, "N/A"))
                     continue
 
-                credits = extract_advanced_credits(page)
+                credits = extract_advanced_credits(page, email)
                 if credits["found"]:
                     adv = credits["advanced"] or "0"
                     print(f"--> [SUCCESS] {email} => Advanced Credits: {adv}")
@@ -326,4 +342,4 @@ def run_credit_check():
 
 if __name__ == "__main__":
     run_credit_check()
-  
+    
