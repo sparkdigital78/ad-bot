@@ -42,36 +42,20 @@ if not ALL_EMAILS:
     print("--> No accounts found in emails.txt or ALL_EMAILS. Exiting...")
     sys.exit(0)
 
-# Saved directly in the root repository folder alongside check_credits.py
 TXT_REPORT_PATH = "advanced_credits_report.txt"
 
 
 def init_report():
-    """Overwrites advanced_credits_report.txt in the root directory for the new run."""
+    """Creates a clean 2-column report with Credits and Email."""
     with open(TXT_REPORT_PATH, mode="w", encoding="utf-8") as f:
-        f.write(f"EASEMATE AI ADVANCED CREDITS REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC\n")
-        f.write("=" * 75 + "\n")
-        f.write(f"{'EMAIL':<42} | {'STATUS':<12} | {'ADV CREDITS':<12}\n")
-        f.write("-" * 75 + "\n")
+        f.write(f"{'CREDITS':<10} | {'EMAIL'}\n")
+        f.write("-" * 55 + "\n")
 
 
-def log_result(email, status, adv_credits="N/A"):
-    """Appends each account's result to advanced_credits_report.txt immediately."""
+def log_result(adv_credits, email):
+    """Appends Credits and Email row to advanced_credits_report.txt."""
     with open(TXT_REPORT_PATH, mode="a", encoding="utf-8") as f:
-        f.write(f"{email:<42} | {status:<12} | {str(adv_credits):<12}\n")
-
-
-def finalize_report(results_summary):
-    """Adds a clean total summary footer at the bottom of the text file."""
-    total_adv = 0
-    for _, status, adv in results_summary:
-        if status == "SUCCESS" and str(adv).isdigit():
-            total_adv += int(adv)
-
-    with open(TXT_REPORT_PATH, mode="a", encoding="utf-8") as f:
-        f.write("=" * 75 + "\n")
-        f.write(f"TOTAL ADVANCED CREDITS ACROSS ALL ACCOUNTS: {total_adv}\n")
-        f.write("=" * 75 + "\n")
+        f.write(f"{str(adv_credits):<10} | {email}\n")
 
 
 def dismiss_overlays(page, keep_login=True):
@@ -132,7 +116,7 @@ def login_account(page, email, password):
             page.wait_for_timeout(1000)
 
     if not page.locator(email_selector).is_visible():
-        return False, "LOGIN_MODAL_FAILED"
+        return False, "LOGIN_FAILED"
 
     page.locator(email_selector).fill(email)
     page.locator(email_selector).dispatch_event("input")
@@ -169,7 +153,7 @@ def login_account(page, email, password):
         return txt.includes('incorrect password') || txt.includes('account does not exist') || txt.includes('invalid email');
     }""")
     if has_auth_error:
-        return False, "INVALID_CREDENTIALS"
+        return False, "INVALID_LOGIN"
 
     if page.locator(email_selector).is_visible():
         dismiss_overlays(page, keep_login=False)
@@ -309,9 +293,7 @@ def run_credit_check():
         )
 
         for idx, email in enumerate(ALL_EMAILS):
-            print("\n" + "-" * 55)
-            print(f"[{idx + 1}/{len(ALL_EMAILS)}] Checking Advanced Credits for: {email}")
-            print("-" * 55)
+            print(f"[{idx + 1}/{len(ALL_EMAILS)}] Checking: {email}")
 
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
@@ -324,26 +306,26 @@ def run_credit_check():
             try:
                 logged_in, reason = login_account(page, email, email_password)
                 if not logged_in:
-                    print(f"--> [FAILED] Could not log in ({reason})")
-                    log_result(email, reason)
-                    results_summary.append((email, reason, "N/A"))
+                    print(f"--> [FAILED] {email} ({reason})")
+                    log_result(reason, email)
+                    results_summary.append((reason, email))
                     continue
 
                 credits = extract_advanced_credits(page)
                 if credits["found"]:
                     adv = credits["advanced"] or "0"
-                    print(f"--> [SUCCESS] {email} => Advanced Credits: {adv}")
-                    log_result(email, "SUCCESS", adv)
-                    results_summary.append((email, "SUCCESS", adv))
+                    print(f"--> [SUCCESS] {adv} | {email}")
+                    log_result(adv, email)
+                    results_summary.append((adv, email))
                 else:
-                    print("--> [WARNING] Logged in, but could not read profile credit dropdown.")
-                    log_result(email, "READ_ERROR")
-                    results_summary.append((email, "READ_ERROR", "N/A"))
+                    print(f"--> [WARNING] READ_ERROR | {email}")
+                    log_result("ERROR", email)
+                    results_summary.append(("ERROR", email))
 
             except Exception as e:
-                print(f"--> [ERROR] Exception on {email}: {e}")
-                log_result(email, "ERROR")
-                results_summary.append((email, "ERROR", "N/A"))
+                print(f"--> [ERROR] {email}: {e}")
+                log_result("ERROR", email)
+                results_summary.append(("ERROR", email))
             finally:
                 if current_context:
                     current_context.close()
@@ -351,17 +333,12 @@ def run_credit_check():
 
         browser.close()
 
-    finalize_report(results_summary)
-
-    print("\n" + "=" * 75)
-    print("FINAL ADVANCED CREDITS REPORT (ALL ACCOUNTS)")
-    print("=" * 75)
-    print(f"{'EMAIL':<42} | {'STATUS':<12} | {'ADV CREDITS':<12}")
-    print("-" * 75)
-    for row in results_summary:
-        print(f"{row[0]:<42} | {row[1]:<12} | {str(row[2]):<12}")
-    print("=" * 75)
-    print(f"--> Updated '{TXT_REPORT_PATH}' in repository root.")
+    print("\n" + "=" * 55)
+    print(f"{'CREDITS':<10} | {'EMAIL'}")
+    print("-" * 55)
+    for adv, email in results_summary:
+        print(f"{str(adv):<10} | {email}")
+    print("=" * 55)
 
 
 if __name__ == "__main__":
