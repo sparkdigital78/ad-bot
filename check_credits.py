@@ -1,21 +1,16 @@
 import os
-import csv
 import time
 import signal
 import sys
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-# Ensure output directories exist
-os.makedirs("videos", exist_ok=True)
-os.makedirs("reports", exist_ok=True)
-
 current_context = None
 
 
 def shutdown_handler(sig, frame):
     global current_context
-    print("\n--> [STOP / CANCEL DETECTED] Closing context to flush files...")
+    print("\n--> [STOP / CANCEL DETECTED] Closing context...")
     if current_context:
         try:
             current_context.close()
@@ -28,7 +23,7 @@ signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
 # ============================================================
-# LOAD ACCOUNTS & SHARD CONFIGURATION
+# LOAD ALL ACCOUNTS IN A SINGLE LIST
 # ============================================================
 raw_emails = ""
 if os.path.exists("emails.txt"):
@@ -41,47 +36,42 @@ else:
 email_password = os.environ.get("ACCOUNT_PASSWORD", "Chetan@2026")
 ALL_EMAILS = [e.strip().lower() for e in raw_emails.replace(",", " ").split() if e.strip()]
 
-shard_index = int(os.environ.get("SHARD_INDEX", "1"))
-total_shards = int(os.environ.get("TOTAL_SHARDS", "1"))
+print(f"--> Total accounts to check in this run: {len(ALL_EMAILS)}")
 
-SHARD_ASSIGNED_EMAILS = [
-    email for idx, email in enumerate(ALL_EMAILS)
-    if idx % total_shards == (shard_index - 1)
-]
-
-print(f"--> [SHARD {shard_index}/{total_shards}] Total accounts: {len(ALL_EMAILS)}")
-print(f"--> [SHARD {shard_index}/{total_shards}] Assigned to this shard: {len(SHARD_ASSIGNED_EMAILS)}")
-
-if not SHARD_ASSIGNED_EMAILS:
-    print(f"--> [SHARD {shard_index}] No accounts assigned. Exiting cleanly...")
+if not ALL_EMAILS:
+    print("--> No accounts found in emails.txt or ALL_EMAILS. Exiting...")
     sys.exit(0)
 
-CSV_REPORT_PATH = f"reports/advanced_credits_shard_{shard_index}.csv"
-TXT_REPORT_PATH = f"reports/advanced_credits_shard_{shard_index}.txt"
+# Saved directly in the root repository folder alongside check_credits.py
+TXT_REPORT_PATH = "advanced_credits_report.txt"
 
 
-def init_reports():
-    """Creates the CSV and TXT report files with Advanced Credits headers."""
-    with open(CSV_REPORT_PATH, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Timestamp", "Email", "Status", "Advanced Credits"])
-
+def init_report():
+    """Overwrites advanced_credits_report.txt in the root directory for the new run."""
     with open(TXT_REPORT_PATH, mode="w", encoding="utf-8") as f:
-        f.write(f"EASEMATE AI ADVANCED CREDITS REPORT (SHARD {shard_index}/{total_shards}) - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"EASEMATE AI ADVANCED CREDITS REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC\n")
         f.write("=" * 75 + "\n")
         f.write(f"{'EMAIL':<42} | {'STATUS':<12} | {'ADV CREDITS':<12}\n")
         f.write("-" * 75 + "\n")
 
 
 def log_result(email, status, adv_credits="N/A"):
-    """Appends a single account's Advanced Credits result to both CSV and TXT files immediately."""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(CSV_REPORT_PATH, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([now_str, email, status, adv_credits])
-
+    """Appends each account's result to advanced_credits_report.txt immediately."""
     with open(TXT_REPORT_PATH, mode="a", encoding="utf-8") as f:
         f.write(f"{email:<42} | {status:<12} | {str(adv_credits):<12}\n")
+
+
+def finalize_report(results_summary):
+    """Adds a clean total summary footer at the bottom of the text file."""
+    total_adv = 0
+    for _, status, adv in results_summary:
+        if status == "SUCCESS" and str(adv).isdigit():
+            total_adv += int(adv)
+
+    with open(TXT_REPORT_PATH, mode="a", encoding="utf-8") as f:
+        f.write("=" * 75 + "\n")
+        f.write(f"TOTAL ADVANCED CREDITS ACROSS ALL ACCOUNTS: {total_adv}\n")
+        f.write("=" * 75 + "\n")
 
 
 def dismiss_overlays(page, keep_login=True):
@@ -94,7 +84,6 @@ def dismiss_overlays(page, keep_login=True):
                                 (m.textContent && m.textContent.includes('Sign in to EaseMate'));
                 if (keepLogin && isLogin) return;
 
-                // Do not remove the top-right profile credit dropdown if it is open
                 if (m.textContent && m.textContent.includes('Advanced Credits') && m.textContent.includes('Free Credits')) return;
 
                 const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
@@ -123,7 +112,6 @@ def login_account(page, email, password):
     email_selector = "input[placeholder='Enter your email address']"
     password_selector = "input[placeholder='Enter your Password']"
 
-    # Step 1: Open Login Modal
     for _ in range(3):
         if page.locator(email_selector).is_visible():
             break
@@ -146,7 +134,6 @@ def login_account(page, email, password):
     if not page.locator(email_selector).is_visible():
         return False, "LOGIN_MODAL_FAILED"
 
-    # Step 2: Fill Email & Password
     page.locator(email_selector).fill(email)
     page.locator(email_selector).dispatch_event("input")
     page.locator(email_selector).dispatch_event("change")
@@ -157,7 +144,6 @@ def login_account(page, email, password):
     page.locator(password_selector).dispatch_event("change")
     page.wait_for_timeout(400)
 
-    # Step 3: Submit Login
     submitted = page.evaluate("""() => {
         const passInput = document.querySelector("input[placeholder='Enter your Password']");
         if (!passInput) return false;
@@ -229,15 +215,13 @@ def read_credits_from_dom(page):
     }""")
 
 
-def extract_advanced_credits(page, email):
-    """Clears delayed promo modals (Daily Check-in + AI Agent) and opens the top-right avatar."""
-    # Wait briefly for delayed post-login popups (Daily Check-in & AI Agent) and purge both
+def extract_advanced_credits(page):
+    """Clears delayed promo modals and opens the top-right avatar to read Advanced Credits."""
     for _ in range(3):
         dismiss_overlays(page, keep_login=False)
         page.wait_for_timeout(1000)
 
-    # Try opening the profile dropdown up to 3 times
-    for attempt in range(3):
+    for _ in range(3):
         dismiss_overlays(page, keep_login=False)
 
         avatar_coords = page.evaluate("""() => {
@@ -265,7 +249,6 @@ def extract_advanced_credits(page, email):
         }""")
 
         if avatar_coords:
-            # Hover first (in case dropdown opens on hover) and then click
             page.mouse.move(avatar_coords["x"], avatar_coords["y"])
             page.wait_for_timeout(400)
             page.mouse.click(avatar_coords["x"], avatar_coords["y"])
@@ -289,7 +272,6 @@ def extract_advanced_credits(page, email):
         if data["found"]:
             return data
 
-    # Fallback: Navigate to /earn-credits where the header has no promo popups and try again
     page.goto("https://easemate.ai/earn-credits", wait_until="networkidle", timeout=20000)
     page.wait_for_timeout(2000)
     dismiss_overlays(page, keep_login=False)
@@ -310,7 +292,7 @@ def extract_advanced_credits(page, email):
 
 def run_credit_check():
     global current_context
-    init_reports()
+    init_report()
 
     results_summary = []
 
@@ -326,15 +308,13 @@ def run_credit_check():
             ]
         )
 
-        for idx, email in enumerate(SHARD_ASSIGNED_EMAILS):
+        for idx, email in enumerate(ALL_EMAILS):
             print("\n" + "-" * 55)
-            print(f"[{idx + 1}/{len(SHARD_ASSIGNED_EMAILS)}] Checking Advanced Credits for: {email}")
+            print(f"[{idx + 1}/{len(ALL_EMAILS)}] Checking Advanced Credits for: {email}")
             print("-" * 55)
 
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
-                record_video_dir="videos/",
-                record_video_size={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             page = context.new_page()
@@ -349,7 +329,7 @@ def run_credit_check():
                     results_summary.append((email, reason, "N/A"))
                     continue
 
-                credits = extract_advanced_credits(page, email)
+                credits = extract_advanced_credits(page)
                 if credits["found"]:
                     adv = credits["advanced"] or "0"
                     print(f"--> [SUCCESS] {email} => Advanced Credits: {adv}")
@@ -371,17 +351,19 @@ def run_credit_check():
 
         browser.close()
 
-    # Print final summary table in GitHub Actions logs
+    finalize_report(results_summary)
+
     print("\n" + "=" * 75)
-    print(f"FINAL ADVANCED CREDITS REPORT - SHARD {shard_index}/{total_shards}")
+    print("FINAL ADVANCED CREDITS REPORT (ALL ACCOUNTS)")
     print("=" * 75)
     print(f"{'EMAIL':<42} | {'STATUS':<12} | {'ADV CREDITS':<12}")
     print("-" * 75)
     for row in results_summary:
         print(f"{row[0]:<42} | {row[1]:<12} | {str(row[2]):<12}")
     print("=" * 75)
-    print(f"--> Saved reports to '{CSV_REPORT_PATH}' and '{TXT_REPORT_PATH}'")
+    print(f"--> Updated '{TXT_REPORT_PATH}' in repository root.")
 
 
 if __name__ == "__main__":
     run_credit_check()
+    
