@@ -85,7 +85,7 @@ def log_result(email, status, adv_credits="N/A"):
 
 
 def dismiss_overlays(page, keep_login=True):
-    """Clears promo popups and daily check-in modals without breaking active login."""
+    """Clears Daily Check-in, AI Agent promo modals, and backdrops."""
     try:
         page.evaluate("""(keepLogin) => {
             const modals = Array.from(document.querySelectorAll('div[role="dialog"], [class*="modal"], [class*="popup"]'));
@@ -93,6 +93,9 @@ def dismiss_overlays(page, keep_login=True):
                 const isLogin = m.querySelector('input[type="email"], input[placeholder*="email" i]') || 
                                 (m.textContent && m.textContent.includes('Sign in to EaseMate'));
                 if (keepLogin && isLogin) return;
+
+                // Do not remove the top-right profile credit dropdown if it is open
+                if (m.textContent && m.textContent.includes('Advanced Credits') && m.textContent.includes('Free Credits')) return;
 
                 const closeBtn = m.querySelector('button, [class*="close"], svg, i, [aria-label*="close" i]');
                 if (closeBtn) {
@@ -190,61 +193,16 @@ def login_account(page, email, password):
     return True, "OK"
 
 
-def extract_advanced_credits(page, email):
-    """Clicks the top-right profile avatar next to Dashboard and extracts Advanced Credits."""
-    dismiss_overlays(page, keep_login=False)
-    page.wait_for_timeout(1000)
-
-    # Find the exact bounding box of the circular avatar icon to the right of 'Dashboard'
-    avatar_coords = page.evaluate("""() => {
-        const dashBtn = Array.from(document.querySelectorAll('a, button, div, span')).find(
-            el => (el.textContent || '').trim() === 'Dashboard' && el.getBoundingClientRect().width > 0
-        );
-        if (!dashBtn) return null;
-
-        const dashRect = dashBtn.getBoundingClientRect();
-        // Look for any visible element in the top header bar strictly to the right of 'Dashboard'
-        const allEls = Array.from(document.querySelectorAll('header *, nav *, div, button, img, span'));
-        const candidates = allEls.filter(el => {
-            const r = el.getBoundingClientRect();
-            return r.width >= 24 && r.width <= 60 &&
-                   r.height >= 24 && r.height <= 60 &&
-                   r.left > dashRect.right &&
-                   Math.abs(r.top - dashRect.top) < 25;
-        });
-
-        if (candidates.length > 0) {
-            // Pick the rightmost circular avatar icon
-            candidates.sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
-            const target = candidates[0].getBoundingClientRect();
-            return { x: target.left + target.width / 2, y: target.top + target.height / 2 };
-        }
-        return null;
-    }""")
-
-    if avatar_coords:
-        page.mouse.click(avatar_coords["x"], avatar_coords["y"])
-    else:
-        # Fallback: click right next to Dashboard button based on 1920x1080 layout
-        dash_loc = page.get_by_text("Dashboard", exact=True).first
-        if dash_loc.is_visible():
-            box = dash_loc.bounding_box()
-            if box:
-                page.mouse.click(box["x"] + box["width"] + 28, box["y"] + box["height"] / 2)
-        else:
-            page.mouse.click(1882, 72)
-
-    page.wait_for_timeout(2000)
-
-    # Read Advanced Credits from the profile dropdown card
-    credit_data = page.evaluate("""() => {
+def read_credits_from_dom(page):
+    """Parses the Advanced Credits number once the profile menu is visible."""
+    return page.evaluate("""() => {
         const result = { advanced: null, found: false };
-        const allElements = Array.from(document.querySelectorAll('div, span, p'));
+        const allElements = Array.from(document.querySelectorAll('div, span, p, li'));
         
         const card = allElements.find(el => 
             el.textContent && 
             el.textContent.includes('Advanced Credits') &&
-            el.innerText.length < 600
+            el.innerText.length < 700
         );
 
         if (!card) return result;
@@ -255,14 +213,99 @@ def extract_advanced_credits(page, email):
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].startsWith('Advanced Credits')) {
                 const match = lines[i].match(/(\\d+)/);
-                result.advanced = match ? match[1] : (lines[i + 1] || '0');
+                if (match) {
+                    result.advanced = match[1];
+                } else if (i + 1 < lines.length && /^\\d+$/.test(lines[i + 1])) {
+                    result.advanced = lines[i + 1];
+                } else if (i > 0 && /^\\d+$/.test(lines[i - 1])) {
+                    result.advanced = lines[i - 1];
+                } else {
+                    result.advanced = '0';
+                }
                 break;
             }
         }
         return result;
     }""")
 
-    return credit_data
+
+def extract_advanced_credits(page, email):
+    """Clears delayed promo modals (Daily Check-in + AI Agent) and opens the top-right avatar."""
+    # Wait briefly for delayed post-login popups (Daily Check-in & AI Agent) and purge both
+    for _ in range(3):
+        dismiss_overlays(page, keep_login=False)
+        page.wait_for_timeout(1000)
+
+    # Try opening the profile dropdown up to 3 times
+    for attempt in range(3):
+        dismiss_overlays(page, keep_login=False)
+
+        avatar_coords = page.evaluate("""() => {
+            const dashBtn = Array.from(document.querySelectorAll('a, button, div, span')).find(
+                el => (el.textContent || '').trim() === 'Dashboard' && el.getBoundingClientRect().width > 0
+            );
+            if (!dashBtn) return null;
+
+            const dashRect = dashBtn.getBoundingClientRect();
+            const allEls = Array.from(document.querySelectorAll('header *, nav *, div, button, img, span'));
+            const candidates = allEls.filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width >= 24 && r.width <= 60 &&
+                       r.height >= 24 && r.height <= 60 &&
+                       r.left > dashRect.right &&
+                       Math.abs(r.top - dashRect.top) < 25;
+            });
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+                const target = candidates[0].getBoundingClientRect();
+                return { x: target.left + target.width / 2, y: target.top + target.height / 2 };
+            }
+            return null;
+        }""")
+
+        if avatar_coords:
+            # Hover first (in case dropdown opens on hover) and then click
+            page.mouse.move(avatar_coords["x"], avatar_coords["y"])
+            page.wait_for_timeout(400)
+            page.mouse.click(avatar_coords["x"], avatar_coords["y"])
+        else:
+            dash_loc = page.get_by_text("Dashboard", exact=True).first
+            if dash_loc.is_visible():
+                box = dash_loc.bounding_box()
+                if box:
+                    tx = box["x"] + box["width"] + 28
+                    ty = box["y"] + box["height"] / 2
+                    page.mouse.move(tx, ty)
+                    page.wait_for_timeout(400)
+                    page.mouse.click(tx, ty)
+            else:
+                page.mouse.click(1882, 72)
+
+        page.wait_for_timeout(1800)
+        dismiss_overlays(page, keep_login=False)
+
+        data = read_credits_from_dom(page)
+        if data["found"]:
+            return data
+
+    # Fallback: Navigate to /earn-credits where the header has no promo popups and try again
+    page.goto("https://easemate.ai/earn-credits", wait_until="networkidle", timeout=20000)
+    page.wait_for_timeout(2000)
+    dismiss_overlays(page, keep_login=False)
+
+    dash_loc = page.get_by_text("Dashboard", exact=True).first
+    if dash_loc.is_visible():
+        box = dash_loc.bounding_box()
+        if box:
+            tx = box["x"] + box["width"] + 28
+            ty = box["y"] + box["height"] / 2
+            page.mouse.move(tx, ty)
+            page.wait_for_timeout(400)
+            page.mouse.click(tx, ty)
+            page.wait_for_timeout(1800)
+
+    return read_credits_from_dom(page)
 
 
 def run_credit_check():
@@ -342,4 +385,3 @@ def run_credit_check():
 
 if __name__ == "__main__":
     run_credit_check()
-    
